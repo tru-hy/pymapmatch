@@ -73,7 +73,6 @@ def posnorm_logpdf(std):
 		return lik*np.NINF**(d < 0)
 	return logpdf
 
-
 def norm_logpdf(std):
 	var = std**2
 	normer = np.log(1.0/np.sqrt(2*np.pi*var))
@@ -86,12 +85,7 @@ def speed_logpdf(dist):
 		return dist(dd/dt)
 	return pdf
 
-class State:
-	def __init__(self, ts, dist, lik):
-		self.ts = ts
-		self.dist = dist
-		self.lik = lik
-		self.prev_state = None
+
 
 class NaiveRouteMatcher:
 	def __init__(self, route):
@@ -105,26 +99,42 @@ class NaiveRouteMatcher:
 	
 	def get_path(self):
 		return self.path
-	
+
+class State:
+	def __init__(self, ts, dist, lik):
+		self.ts = ts
+		self.dist = dist
+		self.lik = lik
+		self.prev_state = None
+		self.cumlik = lik
 
 class RouteMatcher:
 	def __init__(self, route,
 			measurement_model=norm_logpdf(30),
-			transition_model=norm_logpdf(25),
+			transition_model=norm_logpdf(60),
 			search_range=3*30):
 		if not hasattr(route, 'hits_in_range'):
 			route = Route(route)
 		self.route = route
 		self.hypotheses = None
 		self.measurement_model = measurement_model
+		# TODO: The transition model based on speed is bad
+		# with the oor-robustness as it penalizes high speeds.
+		# Solve by tracking speed and calculating the transition
+		# probability by acceleration?
 		self.transition_model = transition_model
 		self.search_range = search_range
+
+		self.oor_measurement_lik = measurement_model(3*30)
+		self.oor_transition_lik = transition_model(1*30)
 
 	def __call__(self, ts, point):
 		hits = self.route.hits_in_range(point, self.search_range)
 		states = []
 		for _, dist, err in hits:
 			states.append(State(ts, dist, self.measurement_model(err)))
+
+		states.append(State(ts, np.nan, self.oor_measurement_lik))
 		
 		if len(states) == 0:
 			return
@@ -135,21 +145,22 @@ class RouteMatcher:
 		
 		prev_dists = np.array([h.dist for h in self.hypotheses])
 		prev_ts = np.array([h.ts for h in self.hypotheses])
-		prev_lik = np.array([h.lik for h in self.hypotheses])
+		prev_lik = np.array([h.cumlik for h in self.hypotheses])
 
 		for state in states:
 			dd = state.dist - prev_dists
 			dt = state.ts - prev_ts
 			speeds = dd/dt
-			liks = self.transition_model(speeds)
+			transition_liks = self.transition_model(speeds)
+			transition_liks[np.isnan(transition_liks)] = self.oor_transition_lik
 			
-			liks += prev_lik
-			prev = np.argmax(liks)
+			cum_liks = transition_liks + prev_lik
+			prev = np.argmax(cum_liks)
 
 			state.prev_state = self.hypotheses[prev]
-
-			state.lik += liks[prev]
-
+			state.lik += transition_liks[prev]
+			state.cumlik += cum_liks[prev]
+		
 		self.hypotheses = states
 	
 	def get_path(self):
