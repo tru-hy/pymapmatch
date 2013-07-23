@@ -68,7 +68,7 @@ real lineseg_point_projection(real *pr, real *ar, real *br, real &error)
 
 
 template <int ndim>
-void Route<ndim>::hits_in_range(real *needle, real rng)
+LineHitVisitor<ndim> Route<ndim>::hits_in_range(real *needle, real rng)
 {
 	Point np(needle, ndim);
 	double start[ndim];
@@ -79,14 +79,15 @@ void Route<ndim>::hits_in_range(real *needle, real rng)
 	}
 
 	Region bbox(start, end, ndim);
-	LineHitVisitor<ndim> result(np, segments);
+	LineHitVisitor<ndim> result(np, *this);
 	index->intersectsWithQuery(bbox, result);
+	return result;
 }
 
 template <int ndim>
 LineHitVisitor<ndim> Route<ndim>::nearest_hits(real *needle, int n) {
 	Point np(needle, ndim);
-	LineHitVisitor<ndim> result(np, segments);
+	LineHitVisitor<ndim> result(np, *this);
 	index->nearestNeighborQuery(n, np, result);
 	return result;
 }
