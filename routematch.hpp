@@ -1,5 +1,6 @@
 #include <vector>
 #include <cmath>
+#include <memory>
 #include <Eigen/Dense>
 #include <spatialindex/SpatialIndex.h>
 #include <spatialindex/capi/IdVisitor.h>
@@ -8,6 +9,8 @@ using namespace SpatialIndex;
 using namespace Eigen;
 using std::vector;
 using std::cerr;
+using std::shared_ptr;
+using std::weak_ptr;
 
 typedef double real;
 
@@ -74,7 +77,7 @@ struct RouteState {
 	real distance;
 	real loglikelihood;
 	real cumloglikelihood;
-	RouteState *prev_state = NULL;
+	shared_ptr<RouteState> prev_state;
 };
 
 class RouteModel {
@@ -115,7 +118,7 @@ GaussianRouteModel DEFAULT_ROUTE_MODEL(30, 30);
 
 template <int ndim>
 class RouteMatcher {
-	RouteState** hypotheses = NULL;
+	shared_ptr<RouteState>* hypotheses = NULL;
 	size_t n_hypotheses = 0;
 	public:
 	int path_len = 0;
@@ -137,9 +140,9 @@ class RouteMatcher {
 		if(n_hits == 0) return;
 		path_len++;
 
-		auto states = new RouteState*[hits.ids.size()];
+		auto states = new shared_ptr<RouteState>[hits.ids.size()];
 		for(size_t i = 0; i < n_hits; ++i) {
-			auto state = new RouteState;
+			auto state = shared_ptr<RouteState>(new RouteState);
 			state->timestamp = ts;
 			state->distance = hits.distances[i];
 			state->loglikelihood = route_model->measurement_loglik(hits.errors[i]);
@@ -155,15 +158,14 @@ class RouteMatcher {
 		
 		for(size_t i = 0; i < n_hits; ++i) find_hypothesis(*states[i]);
 
-		// TODO: DON'T LEAK!
-		delete hypotheses;
+		delete [] hypotheses;
 		hypotheses = states;
 		n_hypotheses = n_hits;
 	}
 
 	void get_path(real *ts, real *dist) {
 		real max_lik = -INFINITY;
-		RouteState *state = NULL;
+		shared_ptr<RouteState> state;
 		
 		for (size_t i = 0; i < n_hypotheses; ++i) {
 			auto lik = hypotheses[i]->cumloglikelihood;
@@ -187,7 +189,7 @@ class RouteMatcher {
 	private:
 	void find_hypothesis(RouteState& state) {
 		real max_lik = -INFINITY;
-		RouteState *winner = NULL;
+		shared_ptr<RouteState> winner;
 
 		for (size_t i = 0; i < n_hypotheses; ++i) {
 			auto dt = state.timestamp - hypotheses[i]->timestamp;
