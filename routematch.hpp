@@ -217,6 +217,15 @@ extern "C" {
 	void route2d_free(Route<2>* route2d) {
 		delete route2d;
 	}
+
+	void route2d_distances(Route<2>* r, real *distances) {
+		auto& distref = *(r->distances);
+		size_t n = distref.size();
+
+		for(size_t i = 0; i < n; ++i) {
+			distances[i] = distref(i);
+		}
+	}
 	
 	void route2d_naive_match(Route<2>* r, real *needles, size_t n, real *distances) {
 		double p[2];
