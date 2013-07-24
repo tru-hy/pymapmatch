@@ -218,9 +218,14 @@ class RouteMatcher {
 	RouteMatcher(Route<ndim>& route, real search_range=100,
 			RouteModel* route_model=&DEFAULT_ROUTE_MODEL)
 		: route(route), search_range(search_range), route_model(route_model),
-		  n_hypotheses(0), path_len(0)
+		  n_hypotheses(0), path_len(0), hypotheses(NULL)
 	{
 		
+	}
+
+	~RouteMatcher()
+	{
+		delete [] hypotheses;
 	}
 
 	void measurement(real ts, real point[ndim])

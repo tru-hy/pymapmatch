@@ -1,94 +1,81 @@
-#include "routematch.hpp"
+// routematch.cpp
+//
 
-#include <iostream>
-#include <vector>
-
-using std::cerr;
-using std::vector;
-
-
-template <int ndim>
-Route<ndim>::Route(Array<real,Dynamic,ndim> waypoints)
-	: waypoints(waypoints)
+#include "routematch.h"
+GaussianRouteModel DEFAULT_ROUTE_MODEL(30, 30);
+#define LZZ_INLINE inline
+real gaussian_logpdf (real var, real x)
 {
-	distances = new Array<real,Dynamic,1>(waypoints.rows(), 1);
-	auto& distref = *distances;
-	auto wpm = waypoints.matrix();
-	
-	distref(0) = 0.0;
-	size_t n = distref.rows();
-	for(size_t i = 1; i < n; ++i) {
-		distref(i) = (wpm.row(i) - wpm.row(i-1)).norm() + distref(i-1);
+	auto normer = std::log(1.0/std::sqrt(2.0*M_PI*var));
+	return normer - x*x/(2*var);
+}
+GaussianRouteModel::GaussianRouteModel (real measurement_std, real speed_std)
+        {
+		measurement_var = measurement_std*measurement_std;
+		speed_var = speed_std*speed_std;
 	}
-	
-	// TODO: Bulk load
-	index_storage = StorageManager::createNewMemoryStorageManager();
-	id_type indexIdentifier;
-	index = RTree::createNewRTree(*index_storage,
-		0.7, 10, 10, ndim, SpatialIndex::RTree::RV_RSTAR, indexIdentifier);
-	
-	real startpoint[ndim];
-	real endpoint[ndim];
-	for(size_t i = 0; i < n-1; ++i) {
-		for(int d = 0; d < ndim; ++d) {
-			startpoint[d] = waypoints(i,d);
-			endpoint[d] = waypoints(i+1,d);
+real GaussianRouteModel::measurement_loglik (real error)
+        {
+		return gaussian_logpdf(measurement_var, error);
+	}
+real GaussianRouteModel::transition_loglik (real speed)
+        {
+		return gaussian_logpdf(speed_var, speed);
+	}
+extern "C"
+{
+  Route <2> * route2d_new (real * waypoints, size_t n)
+                                                         {
+		Map<Array<real,Dynamic,2> > wayarr(waypoints, n, 2);
+		return new Route<2>(wayarr);
+	}
+}
+extern "C"
+{
+  void route2d_free (Route <2> * route2d)
+                                             {
+		delete route2d;
+	}
+}
+extern "C"
+{
+  void route2d_distances (Route <2> * r, real * distances)
+                                                             {
+		auto& distref = *(r->distances);
+		size_t n = distref.size();
+
+		for(size_t i = 0; i < n; ++i) {
+			distances[i] = distref(i);
 		}
-		LineSegment seg(startpoint, endpoint, ndim);
-		index->insertData(0, NULL, seg, i);
-		segments.push_back(seg);
 	}
 }
-
-template <size_t ndim>
-real lineseg_point_projection(real *pr, real *ar, real *br, real &error)
+extern "C"
 {
-	Map<Matrix<real,1,ndim> > p(pr, 1, ndim);
-	Map<Matrix<real,1,ndim> > a(ar, 1, ndim);
-	Map<Matrix<real,1,ndim> > b(br, 1, ndim);
-	auto segd = b - a;
-	auto seglen = segd.norm();
-	auto normstart = p - a;
-	auto t = normstart.dot(segd)/(seglen*seglen);
-	if(t > 1) {
-		error = (p - b).norm();
-		return seglen;
+  void route2d_naive_match (Route <2> * r, real * needles, size_t n, real * distances)
+                                                                                        {
+		double p[2];
+		for(size_t i = 0; i < n; i++) {
+			p[0] = needles[i];
+			p[1] = needles[n+i];
+			auto hits = r->nearest_hits(p, 1);
+			distances[i] = hits.distances[0];
+		}
 	}
-
-	if(t < 0) {
-		error = normstart.norm();
-		return 0.0;
-	}
-	
-	auto proj = a + t*segd;
-	error = (p - proj).norm();
-	return t*seglen;
-
 }
-
-
-template <int ndim>
-LineHitVisitor<ndim> Route<ndim>::hits_in_range(real *needle, real rng)
+extern "C"
 {
-	Point np(needle, ndim);
-	double start[ndim];
-	double end[ndim];
-	for(int d = 0; d < ndim; ++d) {
-		start[d] = needle[d] - rng;
-		end[d] = needle[d] + rng;
+  size_t route2d_hmm_match (Route <2> * r, real * ts, real * pos, size_t n, real * outts, real * outdist)
+                                                    {
+		RouteMatcher<2> matcher(*r);
+		double p[2];
+		for(size_t i = 0; i < n; i++) {
+			p[0] = pos[i];
+			p[1] = pos[n+i];
+			matcher.measurement(ts[i], p);
+		}
+		
+		matcher.get_path(outts, outdist);
+		return matcher.path_len;
 	}
-
-	Region bbox(start, end, ndim);
-	LineHitVisitor<ndim> result(np, *this);
-	index->intersectsWithQuery(bbox, result);
-	return result;
 }
-
-template <int ndim>
-LineHitVisitor<ndim> Route<ndim>::nearest_hits(real *needle, int n) {
-	Point np(needle, ndim);
-	LineHitVisitor<ndim> result(np, *this);
-	index->nearestNeighborQuery(n, np, result);
-	return result;
-}
-
+#undef LZZ_INLINE
