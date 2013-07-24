@@ -11,8 +11,6 @@ a thin C-wrapper for Python/NumPy interfacing.
 ### Quick
 Make sure you have the dependencies (see below), go to the source root and run
 	
-	git clone <thecloneurl>
-	cd libspatialindex
 	make
 
 No real installer at the moment, and may stay so.
