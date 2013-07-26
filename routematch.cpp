@@ -64,9 +64,10 @@ extern "C"
 }
 extern "C"
 {
-  size_t route2d_hmm_match (Route <2> * r, real * ts, real * pos, size_t n, real * outts, real * outdist)
+  size_t route2d_hmm_match (Route <2> * r, real * ts, real * pos, size_t n, real measurement_std, real transition_std, real * outts, real * outdist)
                                                     {
-		RouteMatcher<2> matcher(*r);
+		GaussianRouteModel model(measurement_std, transition_std);
+		RouteMatcher<2> matcher(*r, &model);
 		double p[2];
 		for(size_t i = 0; i < n; i++) {
 			p[0] = pos[i];

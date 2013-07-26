@@ -87,7 +87,7 @@ public:
   Route <ndim> & route;
   RouteModel * route_model;
   real search_range;
-  RouteMatcher (Route <ndim> & route, real search_range = 100, RouteModel * route_model = &DEFAULT_ROUTE_MODEL);
+  RouteMatcher (Route <ndim> & route, RouteModel * route_model = &DEFAULT_ROUTE_MODEL, real search_range = 100);
   ~ RouteMatcher ();
   void measurement (real ts, real (point) [ndim]);
   void get_path (real * ts, real * dist);
@@ -112,7 +112,7 @@ extern "C"
 }
 extern "C"
 {
-  size_t route2d_hmm_match (Route <2> * r, real * ts, real * pos, size_t n, real * outts, real * outdist);
+  size_t route2d_hmm_match (Route <2> * r, real * ts, real * pos, size_t n, real measurement_std, real transition_std, real * outts, real * outdist);
 }
 template <size_t ndim>
 real lineseg_point_projection (real * pr, real * ar, real * br, real & error)
@@ -226,7 +226,7 @@ template <size_t ndim>
 void LineHitVisitor <ndim>::visitData (std::vector < const IData * > & v)
                                                          {}
 template <int ndim>
-RouteMatcher <ndim>::RouteMatcher (Route <ndim> & route, real search_range, RouteModel * route_model)
+RouteMatcher <ndim>::RouteMatcher (Route <ndim> & route, RouteModel * route_model, real search_range)
   : route (route), search_range (search_range), route_model (route_model), n_hypotheses (0), path_len (0), hypotheses (NULL)
         {
 		

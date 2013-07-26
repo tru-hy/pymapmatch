@@ -215,8 +215,9 @@ class RouteMatcher {
 	RouteModel* route_model;
 	real search_range;
 
-	RouteMatcher(Route<ndim>& route, real search_range=100,
-			RouteModel* route_model=&DEFAULT_ROUTE_MODEL)
+	RouteMatcher(Route<ndim>& route,
+			RouteModel* route_model=&DEFAULT_ROUTE_MODEL,
+			real search_range=100)
 		: route(route), search_range(search_range), route_model(route_model),
 		  n_hypotheses(0), path_len(0), hypotheses(NULL)
 	{
@@ -333,8 +334,10 @@ extern "C" {
 	}
 
 	size_t route2d_hmm_match(Route<2>* r, real *ts, real *pos, size_t n,
+			real measurement_std, real transition_std,
 			real *outts, real *outdist) {
-		RouteMatcher<2> matcher(*r);
+		GaussianRouteModel model(measurement_std, transition_std);
+		RouteMatcher<2> matcher(*r, &model);
 		double p[2];
 		for(size_t i = 0; i < n; i++) {
 			p[0] = pos[i];
