@@ -1,2 +1,4 @@
 *.so
 *.o
+*.pyc
+routematch_memtest
