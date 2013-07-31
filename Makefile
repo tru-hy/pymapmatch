@@ -1,4 +1,4 @@
-CFLAGS=-Ofast
+CFLAGS=-Ofast -fPIC
 
 routematch.so: routematch.o
 	g++ $(CFLAGS) -std=c++0x -lspatialindex -I. -shared -o $@ $<
