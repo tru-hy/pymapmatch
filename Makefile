@@ -1,17 +1,19 @@
-CFLAGS=-Ofast -fPIC
+CC=clang++
+CFLAGS=-O3 -fpic
+LIBS=-lspatialindex
 
 routematch.so: routematch.o
-	g++ $(CFLAGS) -std=c++0x -lspatialindex -I. -shared -o $@ $<
+	$(CC) $(CFLAGS) -std=c++0x -I. $(LIBS) -shared -o $@ $<
 
 routematch.cpp: routematch.lzz
 	lzz $<
 
 routematch.o: routematch.cpp routematch.h
-	g++ $(CFLAGS) -std=c++0x -lspatialindex -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -std=c++0x -I. -c -o $@ $<
 
 .PHONY: memtest
 memtest: routematch_memtest
 	valgrind --tool=memcheck --leak-check=full ./$<
 
 routematch_memtest: routematch_memtest.cpp routematch.o
-	g++ $(CFLAGS) -std=c++0x -lspatialindex -I. -o $@ $^
+	$(CC) $(CFLAGS) -std=c++0x -I. $(LIBS) -o $@ $^
