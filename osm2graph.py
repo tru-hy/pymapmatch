@@ -61,6 +61,7 @@ def euclidean_edge_costs(node_coords, edges):
 
 def fastlines(segments, *args, **kwargs):
 	import matplotlib.pyplot as plt
+	invert = kwargs.pop('invert_dims', False)
 	x = []
 	y = []
 	for a, b in segments:
@@ -70,6 +71,8 @@ def fastlines(segments, *args, **kwargs):
 		y.append(a[1])
 		y.append(b[1])
 		y.append(None)
+	if invert:
+		x, y = y, x
 	return plt.plot(x, y, *args, **kwargs)
 
 def plot_graph(nodes, edges, **kwargs):
