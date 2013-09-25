@@ -1,8 +1,10 @@
 from itertools import izip
+import sys
 
 import numpy as np
 import rtree
 import networkx
+
 
 def lineseg_point_projection(p, a, b):
 	(p, a, b) = map(np.array, (p, a, b))
@@ -32,6 +34,14 @@ class _State(object):
 		self.parent = parent
 		self.cumlik = 0.0
 		self.path = []
+		self.transition_lik = np.nan
+
+def are_same_node((se, st), (e, t)):
+	if st not in (0.0, 1.0):
+		return
+	if t not in (0.0, 1.0):
+		return
+	return se[int(st)] == e[int(t)]
 
 class _Matcher(object):
 	def __init__(self, model):
@@ -61,6 +71,10 @@ class _Matcher(object):
 		
 		# Prune duplicates that hit exactly on
 		# the nodes.
+		# TODO: For some reason this pruning affects
+		# results. Probably some logic flaw in the programmer.
+		# Which is a shame as this does remove a lot of hypotheses.
+		"""
 		inter_node_hits = []
 		exact_node_hits = {}
 		for (e, t, error, point) in positions:
@@ -76,18 +90,22 @@ class _Matcher(object):
 			exact_node_hits[node] = (e, t, error, point)
 
 		hits = inter_node_hits + exact_node_hits.values()
+		"""
+		hits = positions
 		
 		# Do nothing if no hits found. Not catastrophical
 		# if this is due to an outlier.
 		# TODO: We could track "out of map" trajectories
 		if len(hits) == 0:
+			print >>sys.stderr, "NO HITS"
 			return
 
 		# No previous states, start with current hits
 		if len(self.states) == 0:
 			for e, t, error, point in positions:
 				s = _State(ts, (e, t), point, None)
-				s.cumlik += self.model.measurement_logpdf(error)
+				s.measurement_lik = self.model.measurement_logpdf(error)
+				s.cumlik += s.measurement_lik
 				self.states.append(s)
 			self._prev_pos = p
 			return
@@ -102,6 +120,7 @@ class _Matcher(object):
 			dist = self.model.edge_costs[e]
 			self.graph.add_edge(e[0], "tmptarget", weight=t*dist)
 			self.graph.add_edge("tmptarget", e[1], weight=(1.0-t)*dist)
+			self.model.node_coords['tmptarget'] = point
 
 			max_lik = -np.inf
 			max_hit = None
@@ -109,28 +128,48 @@ class _Matcher(object):
 				# Add temporary target node
 				se, st = prev.position
 				dist = self.model.edge_costs[se]
-				if e == se and st < t:
+				if e == se and st <= t:
 					# The source is on the same edge than the
 					# start and before, so it can jump straight
-					# there. TODO: I'm quite sure this is also
-					# the shortest path.
+					# there. 
 					self.graph.add_edge("tmpsource", "tmptarget",
 						weight=dist*(t-st))
-					
+				
+				# Allow self-transition if the nodes are exactly the same.
+				# TODO: Get rid of this by getting rid of the whole temporary
+				#	node mess.
+				if are_same_node((se, st), (e, t)):
+					self.graph.add_edge("tmpsource", "tmptarget",
+						weight=0.0)
+				
 				self.graph.add_edge(se[0], "tmpsource", weight=st*dist)
 				self.graph.add_edge("tmpsource", se[1], weight=(1.0-st)*dist)
+				self.model.node_coords['tmpsource'] = prev.point
 				# Find shortest path
 				try:
 					distance, path = networkx.bidirectional_dijkstra(
 						self.graph,
 						"tmpsource", "tmptarget",
 						weight='weight')
+					"""
+					def euclidean_dist(a, b):
+						return np.linalg.norm(np.subtract(
+							self.model.node_coords[a],
+							self.model.node_coords[b]))
+					path = networkx.astar_path(self.graph, "tmpsource", "tmptarget",
+						euclidean_dist, weight='weight')
+					distance = sum(self.graph[path[i]][path[i+1]]['weight']
+						for i in range(len(path)-1))
+					"""
 				except networkx.exception.NetworkXNoPath:
 					continue
 				finally:
 					# Remove temporary target node
 					self.graph.remove_node("tmpsource")
+				
+				
 				dt = ts - prev.ts
+
 				path_coords = ([prev.point] +
 					[self.model.node_coords[n] for n in path[1:-1]] +
 					[point])
@@ -146,16 +185,18 @@ class _Matcher(object):
 			if max_hit is None:
 				# Non-reachable target
 				continue
-
+			
 			s = _State(ts, (e, t), point, max_hit[0])
 			s.path = max_hit[1][1:-1]
 			s.cumlik += max_lik
 			s.cumlik += self.model.measurement_logpdf(error)
 			new_states.append(s)
-		if len(new_states) == []:
-			# No valid transitions, ignore current measurement
-			return
 
+		if len(new_states) == 0:
+			# No valid transitions, ignore current measurement
+			print >>sys.stderr, "NO TRANSITIONS"
+			return
+		
 		self._prev_pos = p
 		self.states = new_states
 	
@@ -166,7 +207,46 @@ class _Matcher(object):
 			path.extend([state.position] + state.path[::-1])
 			state = state.parent
 		return path[::-1]
-			
+	
+	def get_winner_state_path(self):
+		state = self.states[np.argmax([s.cumlik for s in self.states])]
+		states = []
+		while state:
+			states.append(state)
+			state = state.parent
+		return states[::-1]
+
+	def get_map_path(self):
+		# Path with "non-map-nodes" except for start and end
+		# skipped. Gives same geometry with less points.
+		states = self.get_winner_state_path()
+		coords = []
+		coords.append(states[0].position)
+		for state in states[1:]:
+			coords.extend(n for n in state.path)
+		coords.append(states[-1].position)
+		return coords
+		
+	
+	def get_map_coordinates(self):
+		states = self.get_winner_state_path()
+		coords = []
+		coords.append(states[0].point)
+		for state in states[1:]:
+			coords.extend(self.model.node_coords[n] for n in state.path)
+		coords.append(states[-1].point)
+		return coords
+		
+	
+	def get_coordinates(self):
+		state = self.states[np.argmax([s.cumlik for s in self.states])]
+		path = []
+		while state:
+			#path.extend([state.point] +
+			#	[self.model.node_coords[n] for n in state.path[::-1]])
+			path.append(state.point)
+			state = state.parent
+		return path[::-1]
 
 def gaussian_logpdf(std):
 	var = std**2
