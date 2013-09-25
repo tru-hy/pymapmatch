@@ -17,7 +17,12 @@ def get_graph(filename):
 		node_coords[id] = coords
 
 	def way(id, tags, refs):
-		if 'highway' not in tags: return
+		is_way = False
+		if 'highway' in tags:
+			is_way = True
+		if 'busway' in tags:
+			is_way = True
+		if not is_way: return
 		if tags['highway'] == 'footway': return
 		if tags['highway'] == 'cycleway': return
 		if tags['highway'] == 'steps': return
@@ -75,14 +80,14 @@ def fastlines(segments, *args, **kwargs):
 		x, y = y, x
 	return plt.plot(x, y, *args, **kwargs)
 
-def plot_graph(nodes, edges, **kwargs):
+def plot_graph(nodes, edges, *args, **kwargs):
 	def segments():
 		for e in edges:
 			try:
 				yield nodes[e[0]], nodes[e[1]]
 			except KeyError:
 				continue
-	return fastlines(segments(), **kwargs)
+	return fastlines(segments(), *args, **kwargs)
 
 def plottest(f):
 	from matplotlib.collections import LineCollection
