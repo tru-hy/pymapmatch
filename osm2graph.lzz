@@ -1,0 +1,257 @@
+#hdr
+#include <readosm.h>
+#include <malloc.h>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <map>
+#include <iostream>
+#include <cmath>
+#include <cstdlib>
+
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/random.hpp>
+#include <boost/random/mersenne_twister.hpp>
+
+#include <spatialindex/SpatialIndex.h>
+#include <spatialindex/capi/IdVisitor.h>
+
+#include <proj_api.h>
+
+using std::unique_ptr;
+using std::vector;
+using std::map;
+using std::string;
+namespace bst = boost;
+using namespace SpatialIndex;
+#end
+
+typedef long long node_id_t;
+// TODO: This is currently as float causes
+// headaches with PROJ.4.
+typedef double real;
+
+typedef bst::adjacency_list<bst::vecS, bst::vecS, bst::directedS,
+	bst::property<bst::vertex_name_t, node_id_t>,
+	bst::property<bst::edge_weight_t, real, bst::property<bst::edge_index_t, id_type> >
+	> Graph;
+typedef bst::graph_traits < Graph >::vertex_descriptor Vertex;
+
+struct Edge {
+	long long source;
+	long long target;
+}
+
+class OsmReaderError : public std::runtime_error {
+	using std::runtime_error::runtime_error;
+}
+
+class CoordinateProjector {
+	private:
+	projPJ projector;
+	projPJ wgs;
+
+	public:
+	CoordinateProjector(const char* proj_string)
+			:projector(NULL), wgs(NULL) {
+		projector = pj_init_plus(proj_string);
+		if(!projector) {
+			throw OsmReaderError("Couldn't initialize coordinate projection");
+		}
+
+		projPJ tmp_wgs = pj_init_plus("+init=epsg:4326");
+		if(!tmp_wgs) {
+			throw OsmReaderError("Couldn't initialize WGS coordinate system");
+		}
+
+		if(!(wgs = pj_latlong_from_proj(tmp_wgs))) {
+			pj_free(tmp_wgs);
+			throw OsmReaderError("Couldn't initialize WGS latlong coordinate system");
+		}
+		pj_free(tmp_wgs);
+	}
+
+	void operator()(double latitude, double longitude, real* x, real* y) {
+		*y = deg_to_rad(latitude);
+		*x = deg_to_rad(longitude);
+		
+		if(pj_transform(wgs, projector, 1, 1, x, y, NULL)) {
+			throw OsmReaderError("Failed to project a coordinate");
+		}
+	}
+
+	/*void inverse(real* xy, Wgs84Point& wgs) {
+		
+	}*/
+
+	~CoordinateProjector() {
+		if(projector) pj_free(projector);
+		if(wgs) pj_free(wgs);
+	}
+}
+
+enum WayRole {
+	IgnoreWay = 0,
+	OneWayWay,
+	TwoWayWay
+}
+
+class OsmGraph {
+	private:
+	ISpatialIndex* edge_index;
+	IStorageManager* edge_index_storage;
+	CoordinateProjector& coord_proj;
+
+	public:
+	Graph graph;
+	map<node_id_t, real[2]> node_coordinates;
+	map<node_id_t, Vertex> id_to_vertex;
+	
+	private:
+	static int handle_osm_node(const void *usr_data, const readosm_node *node) {
+		auto self = (OsmGraph*)usr_data;
+		auto& coords = self->node_coordinates[node->id];
+		self->coord_proj(node->latitude, node->longitude,
+			&coords[0], &coords[1]);
+		
+		auto node_id_prop = bst::get(bst::vertex_name, self->graph);
+		Vertex v = bst::add_vertex(self->graph);
+		self->id_to_vertex[node->id] = v;
+		node_id_prop[v] = node->id;
+		
+		return READOSM_OK;
+	}
+
+	// TODO: Make configurable
+	static WayRole get_way_role(const readosm_way *way) {
+		const char *highway = NULL;
+		const char *busway = NULL;
+		const char *oneway = NULL;
+		const char *junction = NULL;
+		
+		for(size_t i=0; i < way->tag_count; ++i) {
+			if(string("highway").compare(way->tags[i].key) == 0)
+				highway = way->tags[i].value;
+			if(string("busway").compare(way->tags[i].key) == 0)
+				busway = way->tags[i].value;
+			if(string("oneway").compare(way->tags[i].key) == 0)
+				oneway = way->tags[i].value;
+			if(string("junction").compare(way->tags[i].key) == 0)
+				junction = way->tags[i].value;
+		}
+		
+		if(!(busway || highway)) return IgnoreWay;
+		if(!highway) return TwoWayWay;
+
+		if(string("footway").compare(highway) == 0) return IgnoreWay;
+		if(string("cycleway").compare(highway) == 0) return IgnoreWay;
+		if(string("steps").compare(highway) == 0) return IgnoreWay;
+		
+		if(string(highway).compare("motorway") == 0) return OneWayWay;
+		if(oneway && string(oneway).compare("yes") == 0) return OneWayWay;
+		if(junction && string(junction).compare("roundabout") == 0) return OneWayWay;
+		
+		return TwoWayWay;
+	}
+	
+	void add_new_edge(node_id_t src, node_id_t dst) {
+		if(!(id_to_vertex.count(src) && id_to_vertex.count(dst))) {
+			return;
+		}
+		auto& s = node_coordinates[src];
+		auto& e = node_coordinates[dst];
+		auto length = std::sqrt(std::pow(s[0]-e[0], 2) + std::pow(s[1]-e[1], 2));
+		
+		auto edge_id = num_edges(graph);
+
+		auto new_edge = bst::add_edge(
+			id_to_vertex[src],
+			id_to_vertex[dst],
+			graph).first;
+		
+		LineSegment seg(s, e, 2);
+		edge_index->insertData(0, NULL, seg, edge_id);
+		get(bst::edge_weight, graph)[new_edge] = length;
+		get(bst::edge_index, graph)[new_edge] = edge_id;
+	}
+
+	static int handle_osm_way(const void *usr_data, const readosm_way *way) {
+		// TODO: The graph search could be optimized quite a bit by
+		//	just inserting one edge per way and calculating the
+		//	edge length from the segments.
+		//	Also duplicating both ways in the RTree causes almost
+		//	double the storage/computation. The implementation is
+		//	simpler this way though.
+		auto self = (OsmGraph*)usr_data;
+		auto& i2v = self->id_to_vertex;
+		WayRole role = get_way_role(way);
+		if(role == IgnoreWay) {
+			return READOSM_OK;
+		}
+
+		for(size_t i=0; i < way->node_ref_count - 1; ++i) {
+			self->add_new_edge(way->node_refs[i], way->node_refs[i+1]);
+		}
+
+		if(role == OneWayWay) return READOSM_OK;
+		
+		for(size_t i=0; i < way->node_ref_count - 1; ++i) {
+			self->add_new_edge(way->node_refs[i+1], way->node_refs[i]);
+		}
+
+
+		return READOSM_OK;
+	}
+	
+	public:
+	OsmGraph(const char *filename, CoordinateProjector& proj)
+			:coord_proj(proj) {
+		edge_index_storage = StorageManager::createNewMemoryStorageManager();
+		id_type index_identifier;
+		edge_index = RTree::createNewRTree(*edge_index_storage,
+			0.7, 10, 10, 2, SpatialIndex::RTree::RV_RSTAR,
+			index_identifier);
+
+		const void *osm_handle;
+		auto status = readosm_open(filename, &osm_handle);
+		if(status != READOSM_OK) {
+			throw new OsmReaderError("Failed to open input file");
+		}
+		// NOTE: Assumes currently that all nodes are read before
+		//	the ways. Seems to be so, but not really assured
+		//	anywhere.
+		readosm_parse(osm_handle, this, handle_osm_node, handle_osm_way, NULL);
+		readosm_close(osm_handle);
+	}
+
+	~OsmGraph() {
+		delete edge_index;
+		delete edge_index_storage;
+	}
+}
+
+real rad_to_deg(real rad) {
+	return rad / (M_PI/180.0);
+}
+
+real deg_to_rad(real deg) {
+	return deg * (M_PI/180.0);
+}
+
+
+
+int main(int argc, char **argv) {
+	CoordinateProjector proj("+init=epsg:3067");
+	OsmGraph graph(argv[1], proj);
+	std::cout << graph.node_coordinates.size() << std::endl;
+
+	//auto nodes = get(vertex_name, graph.graph);
+	//std::cout << nodes.size() << std::endl;
+	auto gen = bst::mt19937(42);
+	for(int i=0; i < 1000; ++i) {
+		
+	}
+	std::cout << random_vertex(graph.graph, gen) << std::endl;
+	//string tmp; std::getline(std::cin, tmp);
+}
