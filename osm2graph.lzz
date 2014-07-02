@@ -14,8 +14,11 @@
 #include <boost/graph/random.hpp>
 #include <boost/random/mersenne_twister.hpp>
 
-#include <spatialindex/SpatialIndex.h>
-#include <spatialindex/capi/IdVisitor.h>
+#include <boost/geometry.hpp>
+#include <boost/geometry/geometries/point.hpp>
+#include <boost/geometry/geometries/box.hpp>
+#include <boost/geometry/geometries/segment.hpp>
+#include <boost/geometry/index/rtree.hpp>
 
 #include <proj_api.h>
 
@@ -24,24 +27,21 @@ using std::vector;
 using std::map;
 using std::string;
 namespace bst = boost;
-using namespace SpatialIndex;
+namespace bg = boost::geometry;
+namespace bgi = boost::geometry::index;
 #end
 
 typedef long long node_id_t;
-// TODO: This is currently as float causes
+// TODO: This is currently double as float causes
 // headaches with PROJ.4.
 typedef double real;
 
 typedef bst::adjacency_list<bst::vecS, bst::vecS, bst::directedS,
 	bst::property<bst::vertex_name_t, node_id_t>,
-	bst::property<bst::edge_weight_t, real, bst::property<bst::edge_index_t, id_type> >
+	bst::property<bst::edge_weight_t, real>
 	> Graph;
 typedef bst::graph_traits < Graph >::vertex_descriptor Vertex;
-
-struct Edge {
-	long long source;
-	long long target;
-}
+typedef bst::graph_traits < Graph >::edge_descriptor Edge;
 
 class OsmReaderError : public std::runtime_error {
 	using std::runtime_error::runtime_error;
@@ -97,23 +97,27 @@ enum WayRole {
 	TwoWayWay
 }
 
+typedef bg::model::point<real, 2, bg::cs::cartesian> Point;
+typedef bg::model::segment<Point> LineSegment;
+typedef bg::model::box<Point> Bbox;
+
 class OsmGraph {
 	private:
-	ISpatialIndex* edge_index;
-	IStorageManager* edge_index_storage;
 	CoordinateProjector& coord_proj;
+	bgi::rtree< std::pair<Bbox, Edge>, bgi::quadratic<16> > edge_index;
 
 	public:
 	Graph graph;
-	map<node_id_t, real[2]> node_coordinates;
+	map<node_id_t, Point> node_coordinates;
 	map<node_id_t, Vertex> id_to_vertex;
 	
 	private:
 	static int handle_osm_node(const void *usr_data, const readosm_node *node) {
 		auto self = (OsmGraph*)usr_data;
-		auto& coords = self->node_coordinates[node->id];
-		self->coord_proj(node->latitude, node->longitude,
-			&coords[0], &coords[1]);
+
+		real x, y;
+		self->coord_proj(node->latitude, node->longitude, &x, &y);
+		self->node_coordinates[node->id] = Point(x, y);
 		
 		auto node_id_prop = bst::get(bst::vertex_name, self->graph);
 		Vertex v = bst::add_vertex(self->graph);
@@ -161,19 +165,22 @@ class OsmGraph {
 		}
 		auto& s = node_coordinates[src];
 		auto& e = node_coordinates[dst];
-		auto length = std::sqrt(std::pow(s[0]-e[0], 2) + std::pow(s[1]-e[1], 2));
+		auto seg = LineSegment(s, e);
 		
-		auto edge_id = num_edges(graph);
 
 		auto new_edge = bst::add_edge(
 			id_to_vertex[src],
 			id_to_vertex[dst],
 			graph).first;
 		
-		LineSegment seg(s, e, 2);
-		edge_index->insertData(0, NULL, seg, edge_id);
+		auto length = bg::length(seg);
+		auto edge_id = num_edges(graph);
+		
 		get(bst::edge_weight, graph)[new_edge] = length;
-		get(bst::edge_index, graph)[new_edge] = edge_id;
+		Bbox bbox;
+		bg::envelope(seg, bbox);
+		edge_index.insert(std::make_pair(bbox, new_edge));
+
 	}
 
 	static int handle_osm_way(const void *usr_data, const readosm_way *way) {
@@ -207,12 +214,6 @@ class OsmGraph {
 	public:
 	OsmGraph(const char *filename, CoordinateProjector& proj)
 			:coord_proj(proj) {
-		edge_index_storage = StorageManager::createNewMemoryStorageManager();
-		id_type index_identifier;
-		edge_index = RTree::createNewRTree(*edge_index_storage,
-			0.7, 10, 10, 2, SpatialIndex::RTree::RV_RSTAR,
-			index_identifier);
-
 		const void *osm_handle;
 		auto status = readosm_open(filename, &osm_handle);
 		if(status != READOSM_OK) {
@@ -226,8 +227,6 @@ class OsmGraph {
 	}
 
 	~OsmGraph() {
-		delete edge_index;
-		delete edge_index_storage;
 	}
 }
 
