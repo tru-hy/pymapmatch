@@ -625,6 +625,7 @@ class MapMatcher2d {
 	OsmGraph& graph;
 	real search_radius;
 	vector< shared_ptr<PositionHypothesis> >* hypotheses = NULL;
+	Point previous_measurement;
 
 	public:
 	MapMatcher2d(OsmGraph& g, real search_radius=100.0)
@@ -654,11 +655,13 @@ class MapMatcher2d {
 		auto query = bgi::intersects(search_area);
 		std::vector< std::pair<Bbox, std::pair<Edge, LineSegment> > > results;
 		graph.edge_index.query(query, std::back_inserter(results));
-
-		/*if(hypotheses) {
-			std::cout << hypotheses->size() << " old" << std::endl;
-			std::cout << results.size() << " new" << std::endl;
-		}*/
+		
+		auto point = Point(x, y);
+		if(!hypotheses) {
+			previous_measurement = point;
+		}
+		auto measured_dist = bg::length(LineSegment(point, previous_measurement));
+		previous_measurement = point;
 
 		auto new_hypotheses = new vector< shared_ptr<PositionHypothesis> >;
 
@@ -697,6 +700,15 @@ class MapMatcher2d {
 			vector<Vertex> best_path;
 			
 			auto visit = [&] (Vertex current, real dist, std::unordered_map<Vertex, Vertex>& successors) {
+
+				// TODO: Make configurable!
+				// TODO: With certain transition functions we could probably
+				//	infer when no other hypothesis can win the current best,
+				//	allowing for an "optimal" return and probably a lot earlier.
+				if(dist > (10.0+measured_dist)*5.0) {
+					return false;
+				}
+
 				auto it = targets.find(current);
 				if(it == targets.end()) return true;
 				auto path = build_path_from_successors(
