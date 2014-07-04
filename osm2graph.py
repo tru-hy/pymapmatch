@@ -89,6 +89,30 @@ def plot_graph(nodes, edges, *args, **kwargs):
 				continue
 	return fastlines(segments(), *args, **kwargs)
 
+def fasttest(f):
+	print >>sys.stderr, "Building graph"
+	nodes, edges, tags = get_graph(f)
+	print >>sys.stderr, "%i nodes, %i edges"%(len(nodes), len(edges))
+	
+	from graph_tool.all import Graph
+
+	g = Graph()
+	node_map = {}
+	
+	print "Adding vertices"
+	for osm_id in nodes.iterkeys():
+		node_map[osm_id] = g.add_vertex()
+	
+	print "Adding edges"
+	for a, b in edges:
+		try:
+			g.add_edge(node_map[a], node_map[b])
+		except KeyError:
+			continue
+	
+	
+		
+
 def plottest(f):
 	from matplotlib.collections import LineCollection
 	import matplotlib.pyplot as plt
@@ -101,7 +125,8 @@ def plottest(f):
 	
 	print >>sys.stderr, "Building graph"
 	nodes, edges, tags = get_graph(f)
-
+	print >>sys.stderr, "%i nodes, %i edges"%(len(nodes), len(edges))
+	return
 	#distances = lil_matrix((len(node_list), len(node_list)))
 	durations = networkx.DiGraph()
 	used_nodes = set()
@@ -123,7 +148,8 @@ def plottest(f):
 		durations.add_edge(edge[0],edge[1], distance=distance, duration=duration)
 		#plt.plot(*zip(a, b), color='black')
 	
-	durations = networkx.strongly_connected_component_subgraphs(durations)[0]
+
+	#durations = networkx.strongly_connected_component_subgraphs(durations)[0]
 	used_nodes = durations.nodes()
 
 	lines = []
@@ -141,6 +167,9 @@ def plottest(f):
 	#line = [nodes[n] for n in path]
 	dijt = time.time() - t
 	print >>sys.stderr, dijt
+
+	print >>sys.stderr, "Done"
+	return
 	"""
 	print >>sys.stderr, "Astar...",
 	t = time.time()
@@ -180,5 +209,6 @@ def plottest(f):
 	plt.show()
 
 if __name__ == '__main__':
-	plottest(sys.argv[1])
+	#plottest(sys.argv[1])
+	fasttest(sys.argv[1])
 

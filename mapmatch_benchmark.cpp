@@ -4,6 +4,8 @@ int main(int argc, char **argv) {
 	CoordinateProjector proj("+init=epsg:3067");
 	OsmGraph graph(argv[1], proj);
 	MapMatcher2d matcher(graph);
+	//OsmMapMatcher matcher(argv[1], "+init=epsg:3067");
+	//auto graph = matcher.graph;
 	std::cout << graph.node_coordinates.size() << std::endl;
 	
 	//std::random_device rd;
@@ -19,16 +21,18 @@ int main(int argc, char **argv) {
 		bounds.max_corner().get<1>()
 		);
 	
-	auto n = 1000000;
+	auto n = 10;
 	auto t = std::clock();
 	for(int i=0; i < n; ++i) {
 		real x = xgen(gen);
 		real y = ygen(gen);
 		
-		matcher.measurement(x, y);
+		std::cout << "Running measurement" << std::endl;
+		matcher.measurement(0, x, y);
+		std::cout << "Done" << std::endl;
 	}
 
-	std::cout << double(std::clock() - t)/double(CLOCKS_PER_SEC)/double(n)*1000.0 << " (ms per R-tree query)" << std::endl;
+	std::cout << double(std::clock() - t)/double(CLOCKS_PER_SEC)/double(n)*1000.0 << " ms per measurement" << std::endl;
 	
 	//auto nodes = get(std::vertex_name, graph.graph);
 	//std::cout << nodes.size() << std::endl;

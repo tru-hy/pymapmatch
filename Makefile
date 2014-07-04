@@ -2,6 +2,18 @@ CC=clang++
 CFLAGS=-O3 -fpic -std=c++11
 ROUTEMATCHLIBS=-lspatialindex
 MAPMATCHLIBS=-lreadosm -lproj
+PYTHONCONF=`python2-config --includes`
+
+DEBUG ?= 0
+ifeq ($(DEBUG), 1)
+        CFLAGS += -DDEBUG -g -O0
+endif
+
+_osmmapmatch.so: osmmapmatch_wrap.cxx
+	$(CC) $(CFLAGS) $(MAPMATCHLIBS) $(PYTHONCONF) -shared -o $@ $<
+
+osmmapmatch_wrap.cxx osmmapmatch.py: osmmapmatch.i osmmapmatch.hpp
+	swig -python -c++ $<
 
 mapmatch_benchmark: mapmatch_benchmark.cpp osmmapmatch.hpp
 	$(CC) $(CFLAGS) -I. $(MAPMATCHLIBS) -o $@ $<
