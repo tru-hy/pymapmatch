@@ -123,58 +123,6 @@ std::pair<real, real> lineseg_point_projection(LineSegment seg, Point p)
 	return std::make_pair(error, t*seglen);
 }
 
-
-class SearchTargetFound {};
-class SearchTargetNotFound {};
-
-/*
-class _SingleTargetVisitor : public bst::default_astar_visitor {
-	const Vertex& target;
-	public:
-	_SingleTargetVisitor(Vertex& t) : target(t) {
-
-	}
-
-	template <class Graph>
-	void examine_vertex(Vertex v, Graph& g) {
-		if(v == target) {
-			throw SearchTargetFound();
-		}
-	}
-}*/
-
-template <class DistanceMap>
-class _SingleTargetVisitor : public bst::default_dijkstra_visitor {
-	const Vertex& target;
-	DistanceMap& dist_map;
-	public:
-	
-	_SingleTargetVisitor(Vertex& t, DistanceMap& m)
-		: target(t), dist_map(m) {
-
-	}
-
-	template <class Graph>
-	void examine_vertex(Vertex v, Graph& g) {
-		/*if(dist_map[v] > 100.0) {
-			std::cout << "Bailing out" << std::endl;
-			throw SearchTargetNotFound();
-		}*/
-		
-		if(v == target) {
-			throw SearchTargetFound();
-		}
-	}
-};
-
-class distance_heuristic : public bst::astar_heuristic<Graph, real>
-{
-	public:
-	real operator()(Vertex u) {
-		return 0.0;
-	}
-};
-
 template <class Key, class Value>
 class default_map
 {	
@@ -203,74 +151,8 @@ class default_map
 	}
 };
 
-template <class Key, class Value>
-class more_hacky_shit_maps_for_the_crappy_boost_api
-{	
-	private:
-	std::unordered_map<Key, Value> m_map;
-	Value deflt;
-
-	public:
-	typedef std::pair<Key, Value> value_type;
-	typedef Key key_type;
-
-	Value& operator[](const Key& k) {
-		if(m_map.count(k) == 0) {
-			m_map[k] = k;
-		}
-		
-		return m_map[k];
-	}
-};
-
-real single_target_shortest_path(Vertex source, Vertex target, const Graph& graph, real cutoff=1.0/0.0) {
-	default_map<Vertex, real> distances(1.0/0.0);
-	default_map<Vertex, real> cost(1.0/0.0);
-	std::unordered_map<Vertex, Vertex> predecessor;
-	auto weights = bst::get(bst::edge_weight, graph);
-
-	typedef std::pair<real, Vertex> Node;
-	std::priority_queue<Node, std::vector<Node>, std::greater<Node>> queue;
-	queue.push(std::make_pair(0.0, source));
-	predecessor[source] = source;
-	
-	while(!queue.empty()) {
-		auto current = queue.top();
-		queue.pop();
-		if(current.first > cutoff) {
-			break;
-		}
-		distances[current.second] = current.first;
-		if(current.first == target) {
-			break;
-		}
-
-		auto children = bst::out_edges(current.second, graph);
-		for(auto edge=children.first; edge!=children.second; edge++) {
-			auto alt = distances[current.second] + weights[*edge];
-			auto child = bst::target(*edge, graph);
-			
-			if(distances.count(child)) {
-				// Sanity check that we don't get a new distance
-				// for an already finished node
-				assert(distances[child] <= alt);
-				// We've already finished this one
-				continue;
-			}
-			
-			if(alt < cost[child]) {
-				cost[child] = alt;
-				queue.push(std::make_pair(alt, child));
-				predecessor[child] = current.first;
-			}
-		}
-	}
-
-	return distances[target];
-}
-
 template <class Callback>
-void reverse_shortest_path(Vertex source, const Graph& graph, Callback callback) {
+void reverse_shortest_path(Vertex source, Graph& graph, Callback callback) {
 	default_map<Vertex, real> distances(1.0/0.0);
 	default_map<Vertex, real> cost(1.0/0.0);
 	std::unordered_map<Vertex, Vertex> successor;
@@ -312,64 +194,35 @@ void reverse_shortest_path(Vertex source, const Graph& graph, Callback callback)
 	}
 }
 
-real single_target_shortest_path_slow(Vertex source, Vertex target, Graph graph) {
-	default_map<Vertex, real> distances(1.0/0.0);
-	default_map<Vertex, real> costs(1.0/0.0);
-	distances[target] = 0.0;
-	
-	//std::map<Vertex, Vertex> parents;
-	more_hacky_shit_maps_for_the_crappy_boost_api<Vertex, Vertex> parents;
+template <class SuccessorMap>
+vector<Vertex> build_path_from_successors(Vertex start, Graph &g, SuccessorMap& suc) {
+	vector<Vertex> result;
 
-	auto parent_map = bst::associative_property_map<decltype(parents)>(parents);
-	auto dist_map = bst::associative_property_map<decltype(distances)>(distances);
-	auto costs_map = bst::associative_property_map<decltype(costs)>(costs);
-	
-	/*auto colorshit = default_map<Vertex, bst::default_color_type>(bst::default_color_type::white);
-	auto color_map = bst::associative_property_map<decltype(colorshit)>(colorshit);*/
-	
-	auto found = false;
-	try {
-	bst::astar_search(graph, source, distance_heuristic(),
-		bst::predecessor_map(parent_map).
-		visitor(_SingleTargetVisitor<decltype(distances)>(target, distances)).
-		distance_map(dist_map).
-		rank_map(costs_map)
-		);
-	} catch(SearchTargetFound e) {
-		found = true;
-	} catch(SearchTargetNotFound e) {
-
+	auto end = suc.end();
+	auto current = suc.find(start);
+	while(current != end) {
+		result.push_back(current->first);
+		current = suc.find(current->second);
 	}
 
-	
-	typedef typename bst::property_traits<decltype(dist_map)>::value_type D;
-	D inf = std::numeric_limits<D>::max();
-	
-
-	/*
-	try {
-	bst::dijkstra_shortest_paths(
-		graph,
-		source,
-		bst::associative_property_map<decltype(parents)>(parents),
-		dist_map,
-		bst::get(bst::edge_weight, graph), 
-		bst::get(bst::vertex_index, graph), 
-		std::less<D>(), // compare
-		bst::closed_plus<D>(inf), // combine
-		D(), // zero
-		_SingleTargetDijkstraVisitor<decltype(distances)>(target, distances) // visitor
-		);
-	} catch(SearchTargetFound e) {
-		found = true;
-	}
-	*/
-
-	if(!found) return 1.0/0.0;
-	return distances[target];
-	//std::cout << "Found " << found << std::endl;
-	//std::cout << "Distance " << distances[target] << std::endl;
+	return result;
 }
+
+auto single_target_shortest_path = [](Vertex source, Vertex target, Graph& graph) {
+	vector<Vertex> path;
+	auto visitor = [&](Vertex current, real distance, 
+		std::unordered_map<Vertex, Vertex>& successors) {
+		
+		if(current != source) return true;
+		path = build_path_from_successors(source, graph, successors);
+		return false;
+	};
+
+	reverse_shortest_path(target, graph, visitor);
+
+	return path;
+};
+
 
 #endif // SWIG
 
@@ -605,23 +458,15 @@ real gaussian_logpdf(real x, real m, real s) {
 	return normer - (x-m)*(x-m)/(2*s*s);
 }
 
-template <class SuccessorMap>
-vector<Vertex> build_path_from_successors(Vertex start, Graph &g, SuccessorMap& suc) {
-	vector<Vertex> result;
 
-	auto end = suc.end();
-	auto current = suc.find(start);
-	while(current != end) {
-		result.push_back(current->first);
-		current = suc.find(current->second);
-	}
-
-	return result;
-}
 
 class MapMatcher2d {
 	// TODO: Probably doing a lot of large object copies. Let's hope
 	//	for copy elision, and of course optimize later.
+	// TODO: There's a huge problem in the approach! By examining just
+	//	a single point on the edge, if the noise causes the measurement
+	//	to "backtrack", the result is very bad! Should consider the whole
+	//	edge instead.
 	OsmGraph& graph;
 	real search_radius;
 	vector< shared_ptr<PositionHypothesis> >* hypotheses = NULL;
@@ -689,20 +534,52 @@ class MapMatcher2d {
 				continue;
 			}
 			
-			std::unordered_map<Vertex, vector<shared_ptr<PositionHypothesis>> > targets;
-			for(auto prev: *hypotheses) {
-				targets[bst::target(prev->edge, graph.graph)].push_back(prev);
-			}
-			
+						
 			shared_ptr<PositionHypothesis> best_parent;
 			auto best_likelihood = -1.0/0.0;
 			auto best_transition = -1.0/0.0;
 			vector<Vertex> best_path;
 			
+			/* No polymorphic lambdas in C++11 yet :( */
+			auto consider_parent = [&] (shared_ptr<PositionHypothesis>& parent, real dist,
+					vector<Vertex>& path ) {
+				auto parent_likelihood = parent->total_likelihood;
+				auto transition = transition_likelihood(dist);
+				auto likelihood = parent_likelihood + transition;
+				if(likelihood > best_likelihood) {
+					best_parent = parent;
+					best_likelihood = likelihood;
+					best_transition = transition;
+					best_path = path;
+				}
+			};
+			
+			std::unordered_map<Vertex, vector<shared_ptr<PositionHypothesis>> > targets;
+			for(auto prev: *hypotheses) {
+				if(prev->edge == hypo->edge) {
+					// The graph search doesn't work in the special case
+					// where the parent and hypo are the same edge.
+					auto real_dist = hypo->edge_offset - prev->edge_offset;
+					if(real_dist < 0.0) {
+						// Won't go into reverse direction. This is a prime example
+						// of the problem that considering only single point in the
+						// edge causes!
+						continue;
+					}
+					// No path as it's the same edge
+					vector<Vertex> path;
+					consider_parent(prev, real_dist, path);
+					continue;
+				}
+				targets[bst::target(prev->edge, graph.graph)].push_back(prev);
+			}
+
+			
 			auto visit = [&] (Vertex current, real dist, std::unordered_map<Vertex, Vertex>& successors) {
 
+				dist += hypo->edge_offset;
 				// TODO: Make configurable!
-				// TODO: With certain transition functions we could probably
+				// TODO: With certain transition likelihood functions we could probably
 				//	infer when no other hypothesis can win the current best,
 				//	allowing for an "optimal" return and probably a lot earlier.
 				if(dist > (10.0+measured_dist)*5.0) {
@@ -715,16 +592,18 @@ class MapMatcher2d {
 						current, graph.graph, successors);
 
 				for(auto parent: it->second) {
-					auto parent_likelihood = parent->total_likelihood;
-					// TODO! Take account the mid-edge hits!!
-					auto transition = transition_likelihood(dist);
+					auto real_dist = dist + parent->edge_offset;
+					consider_parent(parent, real_dist, path);
+					
+					/*auto parent_likelihood = parent->total_likelihood;
+					auto transition = transition_likelihood(real_dist);
 					auto likelihood = parent_likelihood + transition;
 					if(likelihood > best_likelihood) {
 						best_parent = parent;
 						best_likelihood = likelihood;
 						best_transition = transition;
 						best_path = path;
-					}
+					}*/
 				
 				}
 				
@@ -802,3 +681,27 @@ class MapMatcher2d {
 	}
 };
 
+std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
+	std::random_device rd;
+	std::mt19937 gen(rd());
+
+	std::vector<Point2d> result;
+
+	auto src = bst::random_vertex(graph.graph, gen);
+	for(int i=0; i < n_waypoints; ++i) {
+		auto dst = bst::random_vertex(graph.graph, gen);
+		auto path = single_target_shortest_path(src, dst, graph.graph);
+		if(!path.size()) {
+			// Recurse until a path is found
+			return get_random_path(graph, n_waypoints);
+		}
+
+		for(auto node: path) {
+			result.push_back(graph.get_vertex_point(node));
+		}
+
+		src = dst;
+	}
+
+	return result;
+}
