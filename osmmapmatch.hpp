@@ -87,9 +87,14 @@ inline real vect_norm(Point p) {
 	return std::sqrt(result);
 }
 
+struct LinesegProjectionResult {
+	Point projected;
+	real error;
+	real t;
+};
 // There's probably something like this in the depths
 // of Boost.Geometry, but couldn't find it, so here we go again.
-std::pair<real, real> lineseg_point_projection(LineSegment seg, Point p)
+LinesegProjectionResult lineseg_point_projection(LineSegment seg, Point p)
 {
 	auto a = get<0>(seg);
 	auto b = get<1>(seg);
@@ -120,7 +125,11 @@ std::pair<real, real> lineseg_point_projection(LineSegment seg, Point p)
 	
 	bg::subtract_point(p, proj);
 	error = vect_norm(p);
-	return std::make_pair(error, t*seglen);
+	LinesegProjectionResult result = {
+		.projected=proj,
+		.error=error,
+		.t=t*seglen};
+	return result;
 }
 
 template <class Key, class Value>
@@ -447,10 +456,12 @@ struct PositionHypothesis {
 	real total_likelihood;
 	real measurement_likelihood;
 	real transition_likelihood;
-	real measurement_error;
+ 	real measurement_error;
 	Edge edge;
 	real edge_offset;
-	vector<Vertex> subpath; 
+	vector<Vertex> subpath;
+	Point position;
+	Point measurement;
 };
 
 real gaussian_logpdf(real x, real m, real s) {
@@ -458,7 +469,36 @@ real gaussian_logpdf(real x, real m, real s) {
 	return normer - (x-m)*(x-m)/(2*s*s);
 }
 
+class StateLikelihoodModel {
+	public:
+	virtual real measurement(const Point& m, const Point& p) = 0;
+	virtual real transition(const PositionHypothesis& parent, const PositionHypothesis& next, const vector<Vertex>& path, real path_length) = 0;
+	virtual ~StateLikelihoodModel() {};
+};
 
+class DrawnGaussianStateModel : public StateLikelihoodModel {
+	real measurement_std;
+	real length_error_std;
+	OsmGraph& graph;
+	public:
+
+	DrawnGaussianStateModel(real measurement_std, real length_error_std, OsmGraph& graph)
+		:measurement_std(measurement_std), graph(graph), length_error_std(length_error_std) {}
+
+	real measurement(const Point& m, const Point& p) {
+		auto dx = m.get<0>() - p.get<0>();
+		auto dy = m.get<1>() - p.get<1>();
+		return gaussian_logpdf(dx, 0.0, measurement_std) +
+			gaussian_logpdf(dy, 0.0, measurement_std);
+	}
+
+	real transition(const PositionHypothesis& parent, const PositionHypothesis& next, const vector<Vertex> &path, real path_length) {
+		//auto measured_length = bg::length(LineSegment(parent.measurement, next.measurement));
+		auto projected_length = bg::length(LineSegment(parent.position, next.position));
+		// TODO: This isn't really normally distributed
+		return gaussian_logpdf(path_length - projected_length, 0, length_error_std);
+	}
+};
 
 class MapMatcher2d {
 	// TODO: Probably doing a lot of large object copies. Let's hope
@@ -471,10 +511,11 @@ class MapMatcher2d {
 	real search_radius;
 	vector< shared_ptr<PositionHypothesis> >* hypotheses = NULL;
 	Point previous_measurement;
+	StateLikelihoodModel& state_model;
 
 	public:
-	MapMatcher2d(OsmGraph& g, real search_radius=100.0)
-		: graph(g), search_radius(search_radius)  {
+	MapMatcher2d(OsmGraph& g, StateLikelihoodModel& state_model, real search_radius=100.0)
+		: graph(g), search_radius(search_radius), state_model(state_model)  {
 
 	}
 
@@ -482,15 +523,6 @@ class MapMatcher2d {
 		if(hypotheses) delete hypotheses;
 	}
 
-	// TODO: Take as template parameter
-	// TODO: Give measurement and target
-	real measurement_likelihood(real error) {
-		// TODO: Distances aren't distributed like this
-		return gaussian_logpdf(error, 0.0, 30.0);
-	}
-	real transition_likelihood(real dist) {
-		return gaussian_logpdf(dist, 0.0, 10.0);
-	}
 
 	void measurement(real ts, real x, real y) {
 		Bbox search_area(
@@ -514,8 +546,8 @@ class MapMatcher2d {
 			auto edge = result.second.first;
 			auto seg = result.second.second;
 			auto proj = lineseg_point_projection(seg, Point(x, y));
-			auto error = proj.first;
-			auto t = proj.second;
+			auto error = proj.error;
+			auto t = proj.t;
 			if(error > search_radius) continue;
 			
 			auto hypo = shared_ptr<PositionHypothesis>(new PositionHypothesis {
@@ -523,8 +555,10 @@ class MapMatcher2d {
 				.edge=edge,
 				.edge_offset=t,
 				.measurement_error=error,
-				.measurement_likelihood=measurement_likelihood(error),
-				.parent=NULL
+				.measurement_likelihood=state_model.measurement(point, proj.projected),
+				.parent=NULL,
+				.position=proj.projected,
+				.measurement=point
 				});
 			hypo->total_likelihood = hypo->measurement_likelihood;
 			if(!hypotheses) {
@@ -544,7 +578,7 @@ class MapMatcher2d {
 			auto consider_parent = [&] (shared_ptr<PositionHypothesis>& parent, real dist,
 					vector<Vertex>& path ) {
 				auto parent_likelihood = parent->total_likelihood;
-				auto transition = transition_likelihood(dist);
+				auto transition = state_model.transition(*parent, *hypo, path, dist);
 				auto likelihood = parent_likelihood + transition;
 				if(likelihood > best_likelihood) {
 					best_parent = parent;
@@ -576,8 +610,8 @@ class MapMatcher2d {
 
 			
 			auto visit = [&] (Vertex current, real dist, std::unordered_map<Vertex, Vertex>& successors) {
-
 				dist += hypo->edge_offset;
+
 				// TODO: Make configurable!
 				// TODO: With certain transition likelihood functions we could probably
 				//	infer when no other hypothesis can win the current best,
@@ -592,19 +626,10 @@ class MapMatcher2d {
 						current, graph.graph, successors);
 
 				for(auto parent: it->second) {
-					auto real_dist = dist + parent->edge_offset;
+					auto parent_left = get(bst::edge_weight, graph.graph)[parent->edge];
+					parent_left -= parent->edge_offset;
+					auto real_dist = dist + parent_left;
 					consider_parent(parent, real_dist, path);
-					
-					/*auto parent_likelihood = parent->total_likelihood;
-					auto transition = transition_likelihood(real_dist);
-					auto likelihood = parent_likelihood + transition;
-					if(likelihood > best_likelihood) {
-						best_parent = parent;
-						best_likelihood = likelihood;
-						best_transition = transition;
-						best_path = path;
-					}*/
-				
 				}
 				
 				targets.erase(it);
@@ -646,6 +671,14 @@ class MapMatcher2d {
 	void measurement(real ts, Point p) {
 		measurement(ts, p.get<0>(), p.get<1>());
 	}
+	
+	
+	void measurements(const std::vector<real>& ts, const std::vector<Point2d>& points) {
+		auto s = ts.size();
+		for(int i = 0; i < s; i++) {
+			measurement(ts[i], points[i].x, points[i].y);
+		}
+	}
 
 	std::vector< Point2d > best_match_coordinates() {
 		vector< Point2d > path;
@@ -680,6 +713,8 @@ class MapMatcher2d {
 		return path;
 	}
 };
+
+
 
 std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
 	std::random_device rd;
