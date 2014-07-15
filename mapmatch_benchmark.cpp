@@ -2,14 +2,24 @@
 
 int main(int argc, char **argv) {
 	CoordinateProjector proj("+init=epsg:3067");
-	OsmGraph graph(argv[1], proj);
-	MapMatcher2d matcher(graph);
-	//OsmMapMatcher matcher(argv[1], "+init=epsg:3067");
-	//auto graph = matcher.graph;
-	std::cout << graph.node_coordinates.size() << std::endl;
+	OsmGraph graph(argv[1], proj, busway_filter);
 	
 	//std::random_device rd;
 	std::mt19937 gen(42);
+
+	int n_iters = 5;
+	for(int i = 0; i < n_iters; i++) {
+		DrawnGaussianStateModel model(30, 30, graph);
+		MapMatcher2d matcher(graph, model);
+		auto path = get_random_path_custom(graph, 5, gen);
+		for(auto coord: path) {
+			// TODO: Sparseness and random noise
+			matcher.measurement(0, coord.x, coord.y);
+		}
+		std::cout << i << std::endl;
+	}
+	
+	/*
 	auto bounds = graph.edge_index.bounds();
 	std::uniform_real_distribution<> xgen(
 		bounds.min_corner().get<0>(),
@@ -48,4 +58,5 @@ int main(int argc, char **argv) {
 	std::cout << double(std::clock() - t)/double(CLOCKS_PER_SEC)/double(n)*1000.0 << " ms per dijkstra query" << std::endl;
 	//std::cout << random_vertex(graph.graph, gen) << std::endl;
 	//string tmp; std::getline(std::cin, tmp);
+	*/
 }

@@ -1,7 +1,7 @@
-CC=clang++
-CFLAGS=-O3 -fpic -std=c++11
+CC=g++
+CFLAGS=-Ofast -fpic -std=c++11 -fopenmp -march=native
 ROUTEMATCHLIBS=-lspatialindex
-MAPMATCHLIBS=-lreadosm -lproj
+MAPMATCHLIBS=-lreadosm -lproj -ltcmalloc -lboost_system
 PYTHONCONF=`python2-config --includes`
 
 DEBUG ?= 0
@@ -13,10 +13,10 @@ _osmmapmatch.so: osmmapmatch_wrap.cxx
 	$(CC) $(CFLAGS) $(MAPMATCHLIBS) $(PYTHONCONF) -shared -o $@ $<
 
 osmmapmatch_wrap.cxx osmmapmatch.py: osmmapmatch.i osmmapmatch.hpp
-	swig -python -c++ $<
+	swig -python -threads -c++ $<
 
 mapmatch_benchmark: mapmatch_benchmark.cpp osmmapmatch.hpp
-	$(CC) $(CFLAGS) -I. $(MAPMATCHLIBS) -o $@ $<
+	$(CC) -g $(CFLAGS) -I. $(MAPMATCHLIBS) -o $@ $<
 
 routematch.so: routematch.o
 	$(CC) $(CFLAGS) -I. $(ROUTEMAPLIBS) -shared -o $@ $<

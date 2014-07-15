@@ -65,12 +65,6 @@ class OsmReaderError : public std::runtime_error {
 	using std::runtime_error::runtime_error;
 };
 
-enum WayRole {
-	IgnoreWay = 0,
-	OneWayWay,
-	TwoWayWay
-};
-
 typedef bg::model::point<real, 2, bg::cs::cartesian> Point;
 typedef bg::model::segment<Point> LineSegment;
 typedef bg::model::box<Point> Bbox;
@@ -135,24 +129,28 @@ LinesegProjectionResult lineseg_point_projection(LineSegment seg, Point p)
 template <class Key, class Value>
 class default_map
 {	
+	public:
+	typedef std::pair<const Key, Value> value_type;
+	typedef Key key_type;
+
 	private:
-	std::unordered_map<Key, Value> m_map;
+	std::unordered_map<Key, Value, std::hash<Key>, std::equal_to<Key>> m_map;
 	Value deflt;
 
 	public:
-	typedef std::pair<Key, Value> value_type;
-	typedef Key key_type;
-
-	default_map(const Value def): deflt(def) {
+	
+	default_map(const Value def): deflt(def),
+		m_map() {
 
 	}
 
 	Value& operator[](const Key& k) {
-		if(m_map.count(k) == 0) {
-			m_map[k] = deflt;
+		auto it = m_map.find(k);
+		if(it == m_map.end()) {
+			return m_map[k] = deflt;
 		}
 		
-		return m_map[k];
+		return it->second;
 	}
 
 	size_t count(const Key& k) {
@@ -282,6 +280,19 @@ class CoordinateProjector {
 			throw OsmReaderError("Failed to project a coordinate");
 		}
 	}
+	
+	void inverse(real x, real y, double *latitude, double *longitude) {
+		*latitude = y;
+		*longitude = x;
+		
+		if(pj_transform(projector, wgs, 1, 1, longitude, latitude, NULL)) {
+			throw OsmReaderError("Failed to project a coordinate");
+		}
+
+		*latitude = rad_to_deg(*latitude);
+		*longitude = rad_to_deg(*longitude);
+	}
+
 
 	/*void inverse(real* xy, Wgs84Point& wgs) {
 		
@@ -293,7 +304,78 @@ class CoordinateProjector {
 	}
 };
 
+enum WayRole {
+	WayRoleIgnore = 0,
+	WayRoleOneWay,
+	WayRoleTwoWay
+};
 
+WayRole busway_filter(const readosm_way *way) {
+	const char *highway = NULL;
+	const char *busway = NULL;
+	const char *oneway = NULL;
+	const char *junction = NULL;
+	
+	for(size_t i=0; i < way->tag_count; ++i) {
+		if(string("highway").compare(way->tags[i].key) == 0)
+			highway = way->tags[i].value;
+		if(string("busway").compare(way->tags[i].key) == 0)
+			busway = way->tags[i].value;
+		if(string("oneway").compare(way->tags[i].key) == 0)
+			oneway = way->tags[i].value;
+		if(string("junction").compare(way->tags[i].key) == 0)
+			junction = way->tags[i].value;
+	}
+		
+	if(!(busway || highway)) return WayRoleIgnore;
+	if(!highway) return WayRoleTwoWay;
+
+	if(string("footway").compare(highway) == 0) return WayRoleIgnore;
+	if(string("cycleway").compare(highway) == 0) return WayRoleIgnore;
+	if(string("steps").compare(highway) == 0) return WayRoleIgnore;
+	
+	if(string(highway).compare("motorway") == 0) return WayRoleOneWay;
+	if(oneway && string(oneway).compare("yes") == 0) return WayRoleOneWay;
+	if(junction && string(junction).compare("roundabout") == 0) return WayRoleOneWay;
+		
+	return WayRoleTwoWay;
+}
+
+WayRole train_filter(const readosm_way *way) {
+	const char *railway = NULL;
+	for(size_t i=0; i < way->tag_count; ++i) {
+		if(string("railway").compare(way->tags[i].key) == 0)
+			railway = way->tags[i].value;
+	};
+
+	if(!railway) return WayRoleIgnore;
+	if(string("rail").compare(railway) != 0) return WayRoleIgnore;
+	return WayRoleTwoWay; // The rails don't seem to have a specified direction
+}
+
+WayRole tram_filter(const readosm_way *way) {
+	const char *railway = NULL;
+	for(size_t i=0; i < way->tag_count; ++i) {
+		if(string("railway").compare(way->tags[i].key) == 0)
+			railway = way->tags[i].value;
+	};
+
+	if(!railway) return WayRoleIgnore;
+	if(string("tram").compare(railway) != 0) return WayRoleIgnore;
+	return WayRoleTwoWay; // TODO: See if the tramways are directed
+}
+
+WayRole subway_filter(const readosm_way *way) {
+	const char *railway = NULL;
+	for(size_t i=0; i < way->tag_count; ++i) {
+		if(string("railway").compare(way->tags[i].key) == 0)
+			railway = way->tags[i].value;
+	};
+
+	if(!railway) return WayRoleIgnore;
+	if(string("subway").compare(railway) != 0) return WayRoleIgnore;
+	return WayRoleTwoWay;
+}
 
 class OsmGraph {
 	private:
@@ -317,37 +399,7 @@ class OsmGraph {
 		return READOSM_OK;
 	}
 
-	// TODO: Make configurable
-	static WayRole get_way_role(const readosm_way *way) {
-		const char *highway = NULL;
-		const char *busway = NULL;
-		const char *oneway = NULL;
-		const char *junction = NULL;
-		
-		for(size_t i=0; i < way->tag_count; ++i) {
-			if(string("highway").compare(way->tags[i].key) == 0)
-				highway = way->tags[i].value;
-			if(string("busway").compare(way->tags[i].key) == 0)
-				busway = way->tags[i].value;
-			if(string("oneway").compare(way->tags[i].key) == 0)
-				oneway = way->tags[i].value;
-			if(string("junction").compare(way->tags[i].key) == 0)
-				junction = way->tags[i].value;
-		}
-		
-		if(!(busway || highway)) return IgnoreWay;
-		if(!highway) return TwoWayWay;
 
-		if(string("footway").compare(highway) == 0) return IgnoreWay;
-		if(string("cycleway").compare(highway) == 0) return IgnoreWay;
-		if(string("steps").compare(highway) == 0) return IgnoreWay;
-		
-		if(string(highway).compare("motorway") == 0) return OneWayWay;
-		if(oneway && string(oneway).compare("yes") == 0) return OneWayWay;
-		if(junction && string(junction).compare("roundabout") == 0) return OneWayWay;
-		
-		return TwoWayWay;
-	}
 
 	void ensure_node(node_id_t node_id) {
 		if(id_to_vertex.count(node_id)) return;
@@ -385,36 +437,42 @@ class OsmGraph {
 	}
 
 	static int handle_osm_way(const void *usr_data, const readosm_way *way) {
+		auto self = (OsmGraph*)usr_data;
+		return self->do_handle_osm_way(way);
+	}
+
+	int do_handle_osm_way(const readosm_way *way) {
 		// TODO: The graph search could be optimized quite a bit by
 		//	just inserting one edge per way and calculating the
 		//	edge length from the segments.
 		//	Also duplicating both ways in the RTree causes almost
 		//	double the storage/computation. The implementation is
 		//	simpler this way though.
-		auto self = (OsmGraph*)usr_data;
-		auto& i2v = self->id_to_vertex;
+		auto& i2v = id_to_vertex;
 		WayRole role = get_way_role(way);
-		if(role == IgnoreWay) {
+		if(role == WayRoleIgnore) {
 			return READOSM_OK;
 		}
 
 		for(size_t i=0; i < way->node_ref_count - 1; ++i) {
-			self->add_new_edge(way->node_refs[i], way->node_refs[i+1]);
+			add_new_edge(way->node_refs[i], way->node_refs[i+1]);
 		}
 
-		if(role == OneWayWay) return READOSM_OK;
+		if(role == WayRoleOneWay) return READOSM_OK;
 		
 		for(size_t i=0; i < way->node_ref_count - 1; ++i) {
-			self->add_new_edge(way->node_refs[i+1], way->node_refs[i]);
+			add_new_edge(way->node_refs[i+1], way->node_refs[i]);
 		}
 
 
 		return READOSM_OK;
 	}
 	
+	WayRole(&get_way_role)(const readosm_way *);
+
 	public:
-	OsmGraph(const char *filename, CoordinateProjector& proj)
-			:coord_proj(proj) {
+	OsmGraph(const char *filename, CoordinateProjector& proj, WayRole(*get_way_role)(const readosm_way *))
+			:coord_proj(proj), get_way_role(*get_way_role) {
 		const void *osm_handle;
 		auto status = readosm_open(filename, &osm_handle);
 		if(status != READOSM_OK) {
@@ -474,6 +532,10 @@ class StateLikelihoodModel {
 	virtual real measurement(const Point& m, const Point& p) = 0;
 	virtual real transition(const PositionHypothesis& parent, const PositionHypothesis& next, const vector<Vertex>& path, real path_length) = 0;
 	virtual ~StateLikelihoodModel() {};
+
+	virtual real best_transition_still_possible(real measured_dist, real distance) {
+		return 0.0;
+	}
 };
 
 class DrawnGaussianStateModel : public StateLikelihoodModel {
@@ -493,10 +555,16 @@ class DrawnGaussianStateModel : public StateLikelihoodModel {
 	}
 
 	real transition(const PositionHypothesis& parent, const PositionHypothesis& next, const vector<Vertex> &path, real path_length) {
-		//auto measured_length = bg::length(LineSegment(parent.measurement, next.measurement));
-		auto projected_length = bg::length(LineSegment(parent.position, next.position));
+		auto measured_length = bg::length(LineSegment(parent.measurement, next.measurement));
+		//auto projected_length = bg::length(LineSegment(parent.position, next.position));
 		// TODO: This isn't really normally distributed
-		return gaussian_logpdf(path_length - projected_length, 0, length_error_std);
+		return gaussian_logpdf(path_length - measured_length, 0, length_error_std);
+	}
+
+	real best_transition_still_possible(real measured_length, real path_length) {
+		auto diff = path_length - measured_length;
+		if(diff < 0.0) diff = 0.0;
+		return gaussian_logpdf(diff, 0.0, length_error_std);
 	}
 };
 
@@ -541,22 +609,29 @@ class MapMatcher2d {
 		previous_measurement = point;
 
 		auto new_hypotheses = new vector< shared_ptr<PositionHypothesis> >;
-
-		for(auto result: results) {
+		
+		#pragma omp parallel for
+		for(auto i=results.begin(); i < results.end(); i++) {
+			auto& result = *i;
 			auto edge = result.second.first;
 			auto seg = result.second.second;
 			auto proj = lineseg_point_projection(seg, Point(x, y));
 			auto error = proj.error;
 			auto t = proj.t;
-			if(error > search_radius) continue;
+			if(error > search_radius) {
+				continue;
+			}
 			
 			auto hypo = shared_ptr<PositionHypothesis>(new PositionHypothesis {
+				.parent=NULL,
 				.timestamp=ts,
+				.total_likelihood=0.0,
+				.measurement_likelihood=state_model.measurement(point, proj.projected),
+				.transition_likelihood=0.0,
+				.measurement_error=error,
 				.edge=edge,
 				.edge_offset=t,
-				.measurement_error=error,
-				.measurement_likelihood=state_model.measurement(point, proj.projected),
-				.parent=NULL,
+				.subpath=vector<Vertex>(),
 				.position=proj.projected,
 				.measurement=point
 				});
@@ -564,7 +639,10 @@ class MapMatcher2d {
 			if(!hypotheses) {
 				// First round, so don't search for
 				// parents
+				#pragma omp critical
+				{
 				new_hypotheses->push_back(hypo);
+				}
 				continue;
 			}
 			
@@ -589,7 +667,7 @@ class MapMatcher2d {
 			};
 			
 			std::unordered_map<Vertex, vector<shared_ptr<PositionHypothesis>> > targets;
-			for(auto prev: *hypotheses) {
+			for(auto& prev: *hypotheses) {
 				if(prev->edge == hypo->edge) {
 					// The graph search doesn't work in the special case
 					// where the parent and hypo are the same edge.
@@ -608,24 +686,26 @@ class MapMatcher2d {
 				targets[bst::target(prev->edge, graph.graph)].push_back(prev);
 			}
 
-			
 			auto visit = [&] (Vertex current, real dist, std::unordered_map<Vertex, Vertex>& successors) {
 				dist += hypo->edge_offset;
-
+				
+				
 				// TODO: Make configurable!
 				// TODO: With certain transition likelihood functions we could probably
 				//	infer when no other hypothesis can win the current best,
 				//	allowing for an "optimal" return and probably a lot earlier.
 				if(dist > (10.0+measured_dist)*5.0) {
+					//std::cout << "Hit the limit :(" << std::endl;
 					return false;
 				}
 
 				auto it = targets.find(current);
 				if(it == targets.end()) return true;
+				auto hypo = it->second;
 				auto path = build_path_from_successors(
 						current, graph.graph, successors);
 
-				for(auto parent: it->second) {
+				for(auto& parent: it->second) {
 					auto parent_left = get(bst::edge_weight, graph.graph)[parent->edge];
 					parent_left -= parent->edge_offset;
 					auto real_dist = dist + parent_left;
@@ -633,9 +713,38 @@ class MapMatcher2d {
 				}
 				
 				targets.erase(it);
+
+				
 				if(!targets.size()) {
 					// All hypotheses found
 					return false;
+				}
+				
+				// Prune parents that can't win
+				// TODO: This would prune a lot more if done
+				//	for each found node and track the current
+				//	worst.
+				auto itr = targets.begin();
+				while(itr != targets.end()) {
+					for(auto& parent: itr->second) {
+						auto parent_left = get(bst::edge_weight, graph.graph)[parent->edge];
+						parent_left -= parent->edge_offset;
+						auto real_dist = dist + parent_left;
+						auto best_possible = state_model.best_transition_still_possible(
+							measured_dist, real_dist);
+						best_possible += parent->total_likelihood;
+						if(best_possible >= best_likelihood) {
+							goto dontremove;
+						}
+					}
+					itr = targets.erase(itr);
+					if(targets.size() == 0) {
+						return false;
+					}
+					continue;
+
+					dontremove:
+					++itr;
 				}
 					
 				return true;
@@ -647,6 +756,10 @@ class MapMatcher2d {
 				);
 			if(!best_parent) {
 				// Not reachable from parents, skipidiskip
+				// TODO: Getting here is very expensive. A nicer
+				// way would be to simultaneously do multi-target
+				// multi-source search and give up when the search
+				// starts to look too bad.
 				continue;
 			}
 
@@ -654,13 +767,17 @@ class MapMatcher2d {
 			hypo->transition_likelihood = best_transition;
 			hypo->total_likelihood += best_likelihood + best_transition;
 			hypo->subpath = best_path;
+			#pragma omp critical
+			{
 			new_hypotheses->push_back(hypo);
+			}
 		}
-
+		
 		if(new_hypotheses->size() == 0) {
 			// Found no hypotheses! Let's hope it was an outlier
 			// and ignore this round.
 			delete new_hypotheses;
+			std::cerr << "Outlier!" << std::endl;
 			return;
 		}
 		
@@ -704,9 +821,7 @@ class MapMatcher2d {
 				Point2d coords(point);
 				path.push_back(coords);
 			}
-			auto point = graph.get_vertex_point(
-				bst::source(current->edge, graph.graph));
-			path.push_back(Point2d(point));
+			path.push_back(Point2d(current->position));
 			current = current->parent;
 		}
 
@@ -714,11 +829,9 @@ class MapMatcher2d {
 	}
 };
 
+template<class Rndgen>
+std::vector<Point2d> get_random_path_custom(OsmGraph& graph, int n_waypoints, Rndgen& gen) {
 
-
-std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
-	std::random_device rd;
-	std::mt19937 gen(rd());
 
 	std::vector<Point2d> result;
 
@@ -728,7 +841,7 @@ std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
 		auto path = single_target_shortest_path(src, dst, graph.graph);
 		if(!path.size()) {
 			// Recurse until a path is found
-			return get_random_path(graph, n_waypoints);
+			return get_random_path_custom(graph, n_waypoints, gen);
 		}
 
 		for(auto node: path) {
@@ -739,4 +852,10 @@ std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
 	}
 
 	return result;
+}
+
+std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	return get_random_path_custom(graph, n_waypoints, gen);
 }
