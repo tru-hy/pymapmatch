@@ -343,26 +343,34 @@ WayRole busway_filter(const readosm_way *way) {
 
 WayRole train_filter(const readosm_way *way) {
 	const char *railway = NULL;
+	const char *oneway = NULL;
 	for(size_t i=0; i < way->tag_count; ++i) {
 		if(string("railway").compare(way->tags[i].key) == 0)
 			railway = way->tags[i].value;
+		if(string("oneway").compare(way->tags[i].key) == 0)
+			oneway = way->tags[i].value;
 	};
 
 	if(!railway) return WayRoleIgnore;
 	if(string("rail").compare(railway) != 0) return WayRoleIgnore;
-	return WayRoleTwoWay; // The rails don't seem to have a specified direction
+	if(oneway && string(oneway).compare("yes") == 0) return WayRoleOneWay;
+	return WayRoleTwoWay;
 }
 
 WayRole tram_filter(const readosm_way *way) {
 	const char *railway = NULL;
+	const char *oneway = NULL;
 	for(size_t i=0; i < way->tag_count; ++i) {
 		if(string("railway").compare(way->tags[i].key) == 0)
 			railway = way->tags[i].value;
+		if(string("oneway").compare(way->tags[i].key) == 0)
+			oneway = way->tags[i].value;
 	};
 
 	if(!railway) return WayRoleIgnore;
 	if(string("tram").compare(railway) != 0) return WayRoleIgnore;
-	return WayRoleTwoWay; // TODO: See if the tramways are directed
+	if(oneway && string(oneway).compare("yes") == 0) return WayRoleOneWay;
+	return WayRoleTwoWay;
 }
 
 WayRole subway_filter(const readosm_way *way) {
@@ -797,6 +805,36 @@ class MapMatcher2d {
 		}
 	}
 
+	std::list<Vertex> route_vertex_path(std::list<shared_ptr<PositionHypothesis> >& path) {
+		std::list<Vertex> vertices;
+		
+		Vertex prev_inserted;
+		auto insert_unique = [&](Vertex vertex) {
+			if(vertices.size() and prev_inserted == vertex) return;
+			vertices.push_back(vertex);
+			prev_inserted = vertex;
+		};
+
+		for(auto current: path) {
+			for(auto vertex: current->subpath) {
+				insert_unique(vertex);
+			}
+			insert_unique(bst::source(current->edge, graph.graph));
+		}
+
+		return vertices;
+	}
+
+	std::list<shared_ptr<PositionHypothesis> > get_hypothesis_path(shared_ptr<PositionHypothesis> current) {
+		std::list< shared_ptr<PositionHypothesis> > states;
+		while(current) {
+			states.push_front(current);
+			current = current->parent;
+		}
+
+		return states;
+	}
+
 	std::vector< Point2d > best_match_coordinates() {
 		vector< Point2d > path;
 		shared_ptr<PositionHypothesis> current;
@@ -808,22 +846,14 @@ class MapMatcher2d {
 			current = hypo;
 		}
 		
-		std::list< shared_ptr<PositionHypothesis> > states;
-
-		while(current) {
-			states.push_front(current);
-			current = current->parent;
+		auto states = get_hypothesis_path(current);
+		path.push_back(states.front()->position);
+		for(auto vertex: route_vertex_path(states)) {
+			auto point = graph.get_vertex_point(vertex);
+			Point2d coords(point);
+			path.push_back(coords);
 		}
-		
-		for(auto current: states){
-			for(auto vertex: current->subpath) {
-				auto point = graph.get_vertex_point(vertex);
-				Point2d coords(point);
-				path.push_back(coords);
-			}
-			path.push_back(Point2d(current->position));
-			current = current->parent;
-		}
+		path.push_back(states.back()->position);
 
 		return path;
 	}
