@@ -9,7 +9,7 @@ int main(int argc, char **argv) {
 
 	int n_iters = 5;
 	for(int i = 0; i < n_iters; i++) {
-		DrawnGaussianStateModel model(30, 30, graph);
+		DrawnGaussianStateModel model(30, 0.1, graph);
 		MapMatcher2d matcher(graph, model);
 		auto path = get_random_path_custom(graph, 5, gen);
 		for(auto coord: path) {

@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS=-Ofast -fpic -std=c++11 -fopenmp -march=native
+CFLAGS=-O3 -fpic -std=c++11 -fopenmp
 ROUTEMATCHLIBS=-lspatialindex
 MAPMATCHLIBS=-lreadosm -lproj -ltcmalloc -lboost_system
 PYTHONCONF=`python2-config --includes`

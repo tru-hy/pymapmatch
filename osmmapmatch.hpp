@@ -43,8 +43,9 @@ namespace bst = boost;
 namespace bg = boost::geometry;
 namespace bgi = boost::geometry::index;
 
+#endif
 typedef long long node_id_t;
-
+#ifndef SWIG
 
 typedef bst::adjacency_list<bst::vecS, bst::vecS, bst::bidirectionalS,
 	bst::property<bst::vertex_name_t, node_id_t>,
@@ -159,7 +160,7 @@ class default_map
 };
 
 template <class Callback>
-void reverse_shortest_path(Vertex source, Graph& graph, Callback callback) {
+void reverse_shortest_path(Vertex target, Graph& graph, Callback callback) {
 	default_map<Vertex, real> distances(1.0/0.0);
 	default_map<Vertex, real> cost(1.0/0.0);
 	std::unordered_map<Vertex, Vertex> successor;
@@ -167,7 +168,7 @@ void reverse_shortest_path(Vertex source, Graph& graph, Callback callback) {
 
 	typedef std::pair<real, Vertex> Node;
 	std::priority_queue<Node, std::vector<Node>, std::greater<Node>> queue;
-	queue.push(std::make_pair(0.0, source));
+	queue.push(std::make_pair(0.0, target));
 	
 	while(!queue.empty()) {
 		auto top = queue.top();
@@ -207,8 +208,9 @@ vector<Vertex> build_path_from_successors(Vertex start, Graph &g, SuccessorMap& 
 
 	auto end = suc.end();
 	auto current = suc.find(start);
+	result.push_back(start);
 	while(current != end) {
-		result.push_back(current->first);
+		result.push_back(current->second);
 		current = suc.find(current->second);
 	}
 
@@ -219,7 +221,6 @@ auto single_target_shortest_path = [](Vertex source, Vertex target, Graph& graph
 	vector<Vertex> path;
 	auto visitor = [&](Vertex current, real distance, 
 		std::unordered_map<Vertex, Vertex>& successors) {
-		
 		if(current != source) return true;
 		path = build_path_from_successors(source, graph, successors);
 		return false;
@@ -292,11 +293,6 @@ class CoordinateProjector {
 		*latitude = rad_to_deg(*latitude);
 		*longitude = rad_to_deg(*longitude);
 	}
-
-
-	/*void inverse(real* xy, Wgs84Point& wgs) {
-		
-	}*/
 
 	~CoordinateProjector() {
 		if(projector) pj_free(projector);
@@ -517,7 +513,7 @@ class OsmGraph {
 
 
 struct PositionHypothesis {
-	shared_ptr<PositionHypothesis> parent;
+	std::shared_ptr<PositionHypothesis> parent;
 	real timestamp;
 	real total_likelihood;
 	real measurement_likelihood;
@@ -525,7 +521,7 @@ struct PositionHypothesis {
  	real measurement_error;
 	Edge edge;
 	real edge_offset;
-	vector<Vertex> subpath;
+	std::vector<Vertex> subpath;
 	Point position;
 	Point measurement;
 };
@@ -546,6 +542,21 @@ class StateLikelihoodModel {
 	}
 };
 
+inline real vector_angle(Point& a, Point &b) {
+	auto cosangle = bg::dot_product(a, b)/(vect_norm(a)*vect_norm(b));
+	// Avoid acos returning NaNs due to rounding errors
+	if(cosangle < -1.0) {
+		cosangle = -1.0;
+	} else if(cosangle > 1.0) {
+		cosangle = 1.0;
+	}
+	auto angle = std::acos(cosangle);
+	return angle;
+}
+
+#if defined __FAST_MATH__
+#error This will not currently work with fast math due to needed NaN checks
+#endif
 class DrawnGaussianStateModel : public StateLikelihoodModel {
 	real measurement_std;
 	real length_error_std;
@@ -563,16 +574,71 @@ class DrawnGaussianStateModel : public StateLikelihoodModel {
 	}
 
 	real transition(const PositionHypothesis& parent, const PositionHypothesis& next, const vector<Vertex> &path, real path_length) {
-		auto measured_length = bg::length(LineSegment(parent.measurement, next.measurement));
-		//auto projected_length = bg::length(LineSegment(parent.position, next.position));
-		// TODO: This isn't really normally distributed
-		return gaussian_logpdf(path_length - measured_length, 0, length_error_std);
+		// The idea here is to calculate how big a share of the
+		// path is in different direction than the measurement.
+		// TODO: I have a hunch that this could be reduced to a very
+		//	simple form of just some distance ratios.
+		auto orig_direction = next.measurement;
+		bg::subtract_point(orig_direction, parent.measurement);
+		
+		auto total_angle = 0.0;
+		auto total_length = 0.0;
+		int n_spans = 0;
+		
+		auto evaluate_span = [&](Point& prev_point, Point& next_point) {
+			auto direction = next_point;
+			bg::subtract_point(direction, prev_point);
+			auto length = vect_norm(direction);
+			prev_point = next_point;
+			auto angle = vector_angle(orig_direction, direction);
+			if(std::isnan(angle)) {
+				return;
+			}
+			total_angle += angle/M_PI*length;
+			total_length += length;
+			n_spans++;
+
+		};
+
+		auto prev_point = parent.position;
+		for(auto i=0; i < path.size(); i++) {
+			auto next_point = graph.get_vertex_point(path[i]);
+			evaluate_span(prev_point, next_point);
+			prev_point = next_point;
+		}
+
+		if(path.size() > 0) {
+			auto next_point = graph.get_vertex_point(bst::source(next.edge, graph.graph));
+			evaluate_span(prev_point, next_point);
+			prev_point = next_point;
+		}
+		
+		auto next_point = next.position;
+		evaluate_span(prev_point, next_point);
+		
+		if(total_length < 1e-6) {
+			// Give some penalty for hanging around in the same
+			// node. Otherwise truncates start and endpoints.
+			// TODO: Could probably be handled more elegantly.
+			total_angle = length_error_std;
+		} else {
+			total_angle /= total_length;
+		}
+		
+		return gaussian_logpdf(total_angle, 0.0, length_error_std);
+		
+		//auto measured_length = bg::length(LineSegment(parent.measurement, next.measurement));
+		//auto relative_dist = (path_length+length_error_std)/(measured_length+length_error_std);
+		//return gaussian_logpdf(relative_dist-1.0, 0, 0.1);
+		//return gaussian_logpdf(path_length, 0.0, length_error_std);
 	}
 
 	real best_transition_still_possible(real measured_length, real path_length) {
-		auto diff = path_length - measured_length;
-		if(diff < 0.0) diff = 0.0;
-		return gaussian_logpdf(diff, 0.0, length_error_std);
+		return gaussian_logpdf(0.0, 0.0, length_error_std);
+		//auto diff = path_length - measured_length;
+		//if(diff < 0.0) diff = 0.0;
+		//return gaussian_logpdf(path_length/(measured_length+1.0), 0, length_error_std);
+		//return gaussian_logpdf(path_length, 0.0, length_error_std);
 	}
 };
 
@@ -617,6 +683,7 @@ class MapMatcher2d {
 		previous_measurement = point;
 
 		auto new_hypotheses = new vector< shared_ptr<PositionHypothesis> >;
+		auto best_total_likelihood = -1.0/0.0;
 		
 		#pragma omp parallel for
 		for(auto i=results.begin(); i < results.end(); i++) {
@@ -766,8 +833,8 @@ class MapMatcher2d {
 				// Not reachable from parents, skipidiskip
 				// TODO: Getting here is very expensive. A nicer
 				// way would be to simultaneously do multi-target
-				// multi-source search and give up when the search
-				// starts to look too bad.
+				// multi-source search (or just parallelise the different searches)
+				// and give up when the search starts to look too bad.
 				continue;
 			}
 
@@ -778,6 +845,9 @@ class MapMatcher2d {
 			#pragma omp critical
 			{
 			new_hypotheses->push_back(hypo);
+			if(hypo->total_likelihood > best_total_likelihood) {
+				best_total_likelihood = 0.0;
+			}
 			}
 		}
 		
@@ -816,6 +886,12 @@ class MapMatcher2d {
 		};
 
 		for(auto current: path) {
+			if(current->subpath.size() == 0) {
+				// If the subpath length is zero, we are
+				// on the same edge as the parent, so
+				// don't add the source.
+				continue;
+			}
 			for(auto vertex: current->subpath) {
 				insert_unique(vertex);
 			}
@@ -837,6 +913,21 @@ class MapMatcher2d {
 
 	std::vector< Point2d > best_match_coordinates() {
 		vector< Point2d > path;
+		auto current = best_current_hypothesis();		
+		auto states = get_hypothesis_path(current);
+		path.push_back(states.front()->position);
+		states.pop_front();
+
+		for(auto vertex: route_vertex_path(states)) {
+			auto point = graph.get_vertex_point(vertex);
+			path.push_back(point);
+		}
+		path.push_back(states.back()->position);
+
+		return path;
+	}
+
+	std::shared_ptr<PositionHypothesis> best_current_hypothesis() {
 		shared_ptr<PositionHypothesis> current;
 		auto max_likelihood = -1.0/0.0;
 		// Find the best current state
@@ -845,23 +936,18 @@ class MapMatcher2d {
 			max_likelihood = hypo->total_likelihood;
 			current = hypo;
 		}
-		
-		auto states = get_hypothesis_path(current);
-		path.push_back(states.front()->position);
-		for(auto vertex: route_vertex_path(states)) {
-			auto point = graph.get_vertex_point(vertex);
-			Point2d coords(point);
-			path.push_back(coords);
-		}
-		path.push_back(states.back()->position);
 
-		return path;
+		return current;
 	}
+	
+	std::vector<std::shared_ptr<PositionHypothesis> > current_hypotheses() {
+		return *hypotheses;
+	}
+	
 };
 
 template<class Rndgen>
 std::vector<Point2d> get_random_path_custom(OsmGraph& graph, int n_waypoints, Rndgen& gen) {
-
 
 	std::vector<Point2d> result;
 
@@ -889,3 +975,14 @@ std::vector<Point2d> get_random_path(OsmGraph& graph, int n_waypoints=1) {
 	std::mt19937 gen(rd());
 	return get_random_path_custom(graph, n_waypoints, gen);
 }
+
+std::vector<Point2d> get_shortest_node_path(OsmGraph& graph, node_id_t start, node_id_t end) {
+	std::vector<Point2d> result;
+	auto s = graph.id_to_vertex[start];
+	auto e = graph.id_to_vertex[end];
+	for(auto node: single_target_shortest_path(s, e, graph.graph)) {
+		result.push_back(graph.get_vertex_point(node));
+	}
+
+	return result;
+};
