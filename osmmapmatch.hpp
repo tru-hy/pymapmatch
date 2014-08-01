@@ -656,6 +656,8 @@ class MapMatcher2d {
 	StateLikelihoodModel& state_model;
 
 	public:
+	int n_outliers = 0;
+
 	MapMatcher2d(OsmGraph& g, StateLikelihoodModel& state_model, real search_radius=100.0)
 		: graph(g), search_radius(search_radius), state_model(state_model)  {
 
@@ -855,7 +857,7 @@ class MapMatcher2d {
 			// Found no hypotheses! Let's hope it was an outlier
 			// and ignore this round.
 			delete new_hypotheses;
-			std::cerr << "Outlier!" << std::endl;
+			n_outliers += 1;
 			return;
 		}
 		
