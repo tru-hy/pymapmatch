@@ -1,7 +1,7 @@
 CC=g++
-CFLAGS=-O3 -fpic -std=c++11 -fopenmp
+CFLAGS=-O3 -fPIC -std=c++11 -fopenmp -Wl,--no-as-needed
 ROUTEMATCHLIBS=-lspatialindex
-MAPMATCHLIBS=-lreadosm -lproj -ltcmalloc -lboost_system
+MAPMATCHLIBS=-lreadosm -lproj -ltcmalloc
 PYTHONCONF=`python2-config --includes`
 
 DEBUG ?= 0
