@@ -493,6 +493,10 @@ class OsmGraph {
 		auto node_id = get(bst::vertex_name, graph)[vertex];
 		return node_coordinates[node_id];
 	}
+
+	node_id_t get_vertex_id(Vertex vertex) {
+		return get(bst::vertex_name, graph)[vertex];
+	}
 	
 	std::vector< std::pair<Point2d, Point2d> > get_edge_coordinates() {
 		vector< std::pair<Point2d, Point2d> > result;
@@ -925,6 +929,24 @@ class MapMatcher2d {
 			path.push_back(point);
 		}
 		path.push_back(states.back()->position);
+
+		return path;
+	}
+
+	std::vector< node_id_t > best_match_node_ids() {
+		vector< node_id_t > path;
+		auto current = best_current_hypothesis();
+		auto states = get_hypothesis_path(current);
+		// OSM id's have to be >= 1, so hacking
+		// zero to be missing.
+		path.push_back(0);
+		states.pop_front();
+
+		for(auto vertex: route_vertex_path(states)) {
+			auto point = graph.get_vertex_id(vertex);
+			path.push_back(point);
+		}
+		path.push_back(0);
 
 		return path;
 	}
