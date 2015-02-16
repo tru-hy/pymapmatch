@@ -278,7 +278,7 @@ class CoordinateProjector {
 		*x = deg_to_rad(longitude);
 		
 		if(pj_transform(wgs, projector, 1, 1, x, y, NULL)) {
-			throw OsmReaderError("Failed to project a coordinate");
+			throw OsmReaderError("Failed to project a coordinate to XY " + std::to_string(latitude) + " " + std::to_string(longitude));
 		}
 	}
 	
@@ -287,7 +287,7 @@ class CoordinateProjector {
 		*longitude = x;
 		
 		if(pj_transform(projector, wgs, 1, 1, longitude, latitude, NULL)) {
-			throw OsmReaderError("Failed to project a coordinate");
+			throw OsmReaderError("Failed to project a coordinate to LatLng "  + std::to_string(x) + " " + std::to_string(y));
 		}
 
 		*latitude = rad_to_deg(*latitude);
@@ -311,7 +311,8 @@ WayRole busway_filter(const readosm_way *way) {
 	const char *busway = NULL;
 	const char *oneway = NULL;
 	const char *junction = NULL;
-	
+	const char *ferry = NULL;
+
 	for(size_t i=0; i < way->tag_count; ++i) {
 		if(string("highway").compare(way->tags[i].key) == 0)
 			highway = way->tags[i].value;
@@ -321,14 +322,21 @@ WayRole busway_filter(const readosm_way *way) {
 			oneway = way->tags[i].value;
 		if(string("junction").compare(way->tags[i].key) == 0)
 			junction = way->tags[i].value;
+		if(string("ferry").compare(way->tags[i].key) == 0)
+			ferry = way->tags[i].value;
 	}
 		
-	if(!(busway || highway)) return WayRoleIgnore;
+	if(!(busway || highway || ferry)) return WayRoleIgnore;
 	if(!highway) return WayRoleTwoWay;
 
 	if(string("footway").compare(highway) == 0) return WayRoleIgnore;
 	if(string("cycleway").compare(highway) == 0) return WayRoleIgnore;
 	if(string("steps").compare(highway) == 0) return WayRoleIgnore;
+	if(string("path").compare(highway) == 0) return WayRoleIgnore;
+	if(string("construction").compare(highway) == 0) return WayRoleIgnore;
+	if(string("proposed").compare(highway) == 0) return WayRoleIgnore;
+	if(string("bridleway").compare(highway) == 0) return WayRoleIgnore;
+
 	
 	if(string(highway).compare("motorway") == 0) return WayRoleOneWay;
 	if(oneway && string(oneway).compare("yes") == 0) return WayRoleOneWay;
